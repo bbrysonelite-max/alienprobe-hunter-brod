@@ -13,6 +13,7 @@ export const scanResults = pgTable("scan_results", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   businessName: text("business_name").notNull(),
   website: text("website"),
+  email: text("email"),
   scanData: text("scan_data"),
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -29,6 +30,7 @@ export const insertScanResultSchema = createInsertSchema(scanResults).omit({
 }).extend({
   businessName: z.string().min(1, "Business name is required"),
   website: z.string().url("Valid URL required").optional(),
+  email: z.string().email("Valid email required").optional(),
 });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;

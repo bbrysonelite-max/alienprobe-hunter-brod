@@ -51,6 +51,7 @@ export class DatabaseStorage implements IStorage {
       .values({
         businessName: insertScanResult.businessName,
         website: insertScanResult.website || null,
+        email: insertScanResult.email || null,
         scanData: insertScanResult.scanData || null,
         status: insertScanResult.status || "pending",
       })

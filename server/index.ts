@@ -8,9 +8,12 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Add CORS headers for Flask compatibility
+// Add CORS headers - restrict in production
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  const origin = process.env.NODE_ENV === 'production' 
+    ? (req.get('Origin') || req.get('Host')) 
+    : '*';
+  res.header('Access-Control-Allow-Origin', origin);
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') {
@@ -61,7 +64,7 @@ const distPath = path.resolve(import.meta.dirname, "dist");
     const message = err.message || "Internal Server Error";
 
     res.status(status).json({ message });
-    throw err;
+    console.error("Express error:", err);
   });
 
   // Serve the React build files if available, otherwise fallback to Vite
