@@ -11,6 +11,7 @@ import Stripe from "stripe";
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+const STRIPE_PAYMENT_LINK_URL = process.env.STRIPE_PAYMENT_LINK_URL;
 const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "4900"); // Default $49.00
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
@@ -641,6 +642,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         success: true,
         paymentsEnabled,
         publishableKeyPresent,
+        paymentLinkUrl: STRIPE_PAYMENT_LINK_URL,
         ...(paymentsEnabled && {
           publicKey: process.env.VITE_STRIPE_PUBLIC_KEY,
           currency: "usd",

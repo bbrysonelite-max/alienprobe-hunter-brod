@@ -40,6 +40,7 @@ type PaymentConfig = {
   paymentsEnabled: boolean;
   publishableKeyPresent: boolean;
   publicKey?: string;
+  paymentLinkUrl?: string;
   currency?: string;
   defaultAmount?: number;
 };
@@ -429,6 +430,16 @@ export default function ScanDetail() {
                             Buy Full Scan Report - ${(paymentConfig?.defaultAmount || 4900) / 100}
                           </>
                         )}
+                      </Button>
+                    ) : paymentConfig?.paymentLinkUrl ? (
+                      <Button
+                        onClick={() => window.open(paymentConfig.paymentLinkUrl, '_blank')}
+                        size="lg"
+                        className="bg-primary hover:bg-primary/90 text-primary-foreground px-8"
+                        data-testid="button-buy-full-scan-link"
+                      >
+                        <CreditCard className="w-4 h-4 mr-2" />
+                        Buy Full Scan Report - ${(paymentConfig?.defaultAmount || 4900) / 100}
                       </Button>
                     ) : !paymentsEnabled ? (
                       <Alert className="max-w-md mx-auto">
