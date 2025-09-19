@@ -5,6 +5,9 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Home from "@/pages/home";
 import ScanResults from "@/pages/scan-results";
+import ScanDetail from "@/pages/scan-detail";
+import PaymentSuccess from "@/pages/payment-success";
+import PaymentCancel from "@/pages/payment-cancel";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -12,6 +15,9 @@ function Router() {
     <Switch>
       <Route path="/" component={Home} />
       <Route path="/results" component={ScanResults} />
+      <Route path="/scan/:scanId" component={ScanDetail} />
+      <Route path="/payment-success" component={PaymentSuccess} />
+      <Route path="/payment-cancel" component={PaymentCancel} />
       <Route component={NotFound} />
     </Switch>
   );

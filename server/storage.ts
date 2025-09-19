@@ -6,6 +6,7 @@ import {
   emailTemplates,
   emailQueue,
   emailLog,
+  payments,
   type User, 
   type InsertUser, 
   type ScanResult, 
@@ -19,7 +20,9 @@ import {
   type EmailQueue,
   type InsertEmailQueue,
   type EmailLog,
-  type InsertEmailLog
+  type InsertEmailLog,
+  type Payment,
+  type InsertPayment
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, count, sql, asc, or, gte, lte } from "drizzle-orm";
@@ -70,6 +73,15 @@ export interface IStorage {
   // Email log operations
   getEmailLogsByLead(leadId: string): Promise<EmailLog[]>;
   createEmailLog(emailLog: InsertEmailLog): Promise<EmailLog>;
+
+  // Payment operations
+  getPayment(id: string): Promise<Payment | undefined>;
+  getPaymentByLeadId(leadId: string): Promise<Payment | undefined>;
+  getPaymentByScanId(scanId: string): Promise<Payment | undefined>;
+  getPaymentByStripeSessionId(sessionId: string): Promise<Payment | undefined>;
+  getPaymentByStripePaymentIntentId(paymentIntentId: string): Promise<Payment | undefined>;
+  createPayment(payment: InsertPayment): Promise<Payment>;
+  updatePayment(id: string, updates: Partial<Payment>): Promise<Payment | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -489,6 +501,71 @@ export class DatabaseStorage implements IStorage {
       .values(insertEmailLog)
       .returning();
     return emailLogItem;
+  }
+
+  // Payment operations implementation
+  async getPayment(id: string): Promise<Payment | undefined> {
+    const [payment] = await db.select().from(payments).where(eq(payments.id, id));
+    return payment || undefined;
+  }
+
+  async getPaymentByLeadId(leadId: string): Promise<Payment | undefined> {
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.leadId, leadId))
+      .orderBy(desc(payments.createdAt));
+    return payment || undefined;
+  }
+
+  async getPaymentByScanId(scanId: string): Promise<Payment | undefined> {
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.scanId, scanId))
+      .orderBy(desc(payments.createdAt));
+    return payment || undefined;
+  }
+
+  async getPaymentByStripeSessionId(sessionId: string): Promise<Payment | undefined> {
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.stripeSessionId, sessionId));
+    return payment || undefined;
+  }
+
+  async getPaymentByStripePaymentIntentId(paymentIntentId: string): Promise<Payment | undefined> {
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.stripePaymentIntentId, paymentIntentId));
+    return payment || undefined;
+  }
+
+  async createPayment(insertPayment: InsertPayment): Promise<Payment> {
+    const [payment] = await db
+      .insert(payments)
+      .values({
+        leadId: insertPayment.leadId,
+        scanId: insertPayment.scanId || null,
+        amount: insertPayment.amount,
+        currency: insertPayment.currency || "usd",
+        status: insertPayment.status || "initialized",
+        stripeSessionId: insertPayment.stripeSessionId || null,
+        stripePaymentIntentId: insertPayment.stripePaymentIntentId || null,
+      })
+      .returning();
+    return payment;
+  }
+
+  async updatePayment(id: string, updates: Partial<Payment>): Promise<Payment | undefined> {
+    const [payment] = await db
+      .update(payments)
+      .set(updates)
+      .where(eq(payments.id, id))
+      .returning();
+    return payment || undefined;
   }
 }
 

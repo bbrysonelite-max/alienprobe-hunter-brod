@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
+import { Link } from "wouter";
 import {
   Table,
   TableBody,
@@ -9,8 +10,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Loader2, Database, AlertCircle, ExternalLink } from "lucide-react";
+import { Loader2, Database, AlertCircle, ExternalLink, Eye } from "lucide-react";
 
 type ScanResult = {
   id: string;
@@ -100,6 +102,7 @@ export default function ResultsTable() {
               <TableHead className="text-foreground font-semibold">Status</TableHead>
               <TableHead className="text-foreground font-semibold">Scan Date</TableHead>
               <TableHead className="text-foreground font-semibold">Insights</TableHead>
+              <TableHead className="text-foreground font-semibold">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -145,6 +148,19 @@ export default function ResultsTable() {
                       <span className="text-xs text-muted-foreground">Processing...</span>
                     )}
                   </div>
+                </TableCell>
+                <TableCell>
+                  <Link href={`/scan/${result.id}`}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-primary hover:text-primary-foreground"
+                      data-testid={`button-view-details-${result.id}`}
+                    >
+                      <Eye className="w-4 h-4 mr-2" />
+                      View Details
+                    </Button>
+                  </Link>
                 </TableCell>
               </TableRow>
             ))}

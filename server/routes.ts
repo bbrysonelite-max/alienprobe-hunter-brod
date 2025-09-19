@@ -1,11 +1,23 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertScanResultSchema, insertLeadSchema } from "@shared/schema";
+import { insertScanResultSchema, insertLeadSchema, insertPaymentSchema } from "@shared/schema";
 import { z } from "zod";
 import { healthCheck, livenessProbe, readinessProbe, metricsEndpoint, simulateError } from "./monitoring";
 import { logger } from "./logger";
 import crypto from "crypto";
+import Stripe from "stripe";
+
+// Initialize Stripe if secret key is present
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "4900"); // Default $49.00
+
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
+  apiVersion: "2024-06-20", // Use latest API version
+}) : null;
+
+const paymentsEnabled = !!STRIPE_SECRET_KEY;
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // API Routes for Alien Probe business scanning
@@ -189,7 +201,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get specific scan result
+  // Get specific scan result with payment-based content gating
   app.get("/api/results/:id", async (req, res) => {
     try {
       const { id } = req.params;
@@ -204,8 +216,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return;
       }
 
-      logger.info('Scan result retrieved', { scanId: id, status: result.status });
-      res.json(result);
+      // Check payment access for content gating
+      let hasAccess = false;
+      
+      // First try to find payment by scanId
+      let payment = await storage.getPaymentByScanId(id);
+      let lead = null;
+      
+      if (payment) {
+        // If payment exists with scanId, get the associated lead
+        lead = await storage.getLead(payment.leadId);
+        hasAccess = payment.status === "paid";
+      } else {
+        // Fallback: treat scanId as leadId for backwards compatibility
+        lead = await storage.getLead(id);
+        if (lead) {
+          payment = await storage.getPaymentByLeadId(lead.id);
+          hasAccess = payment?.status === "paid" || lead.status === "converted";
+        }
+      }
+
+      // Prepare response with content gating
+      let responseData = { ...result };
+      
+      if (!hasAccess && result.scanData) {
+        // Redact premium content for unpaid users
+        try {
+          const scanData = JSON.parse(result.scanData);
+          const redactedScanData = {
+            timestamp: scanData.timestamp,
+            websiteAnalysis: scanData.websiteAnalysis,
+            businessScore: scanData.businessScore,
+            // Remove premium content
+            insights: scanData.insights ? ["Premium insights available after purchase"] : [],
+            completed: scanData.completed,
+            // Add indicator that more content is available
+            premiumContentAvailable: true,
+            totalInsights: Array.isArray(scanData.insights) ? scanData.insights.length : 0
+          };
+          responseData.scanData = JSON.stringify(redactedScanData);
+        } catch (parseError) {
+          // If scan data can't be parsed, keep original but add warning
+          logger.warn('Failed to parse scan data for content gating', { scanId: id, error: parseError });
+        }
+      }
+
+      logger.info('Scan result retrieved with content gating', { 
+        scanId: id, 
+        status: result.status, 
+        hasAccess,
+        hasPayment: !!payment,
+        leadId: lead?.id 
+      });
+      
+      res.json(responseData);
     } catch (error) {
       logger.error('Failed to fetch scan result', error as Error, { scanId: req.params.id });
       res.status(500).json({ 
@@ -559,6 +623,606 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ 
         success: false, 
         error: "Failed to get email logs" 
+      });
+    }
+  });
+
+  // Payment configuration endpoint
+  app.get("/api/payments/config", async (req: Request, res: Response) => {
+    try {
+      const publishableKeyPresent = !!process.env.VITE_STRIPE_PUBLIC_KEY;
+      
+      logger.info('Payment config requested', { 
+        paymentsEnabled, 
+        publishableKeyPresent 
+      });
+
+      res.json({
+        success: true,
+        paymentsEnabled,
+        publishableKeyPresent,
+        ...(paymentsEnabled && {
+          publicKey: process.env.VITE_STRIPE_PUBLIC_KEY,
+          currency: "usd",
+          defaultAmount: FULL_SCAN_PRICE_AMOUNT
+        })
+      });
+    } catch (error) {
+      logger.error('Payment config request failed', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to get payment configuration" 
+      });
+    }
+  });
+
+  // Create Stripe Checkout Session with idempotency and scanId support
+  app.post("/api/payments/checkout", async (req: Request, res: Response) => {
+    try {
+      if (!paymentsEnabled || !stripe) {
+        logger.warn('Payment checkout attempted but payments are disabled');
+        res.status(400).json({ 
+          success: false, 
+          error: "Payments are not enabled" 
+        });
+        return;
+      }
+
+      const { leadId, scanId } = req.body;
+      
+      if (!leadId && !scanId) {
+        res.status(400).json({ 
+          success: false, 
+          error: "Lead ID or Scan ID is required" 
+        });
+        return;
+      }
+
+      // Enhanced lead lookup with robust fallback logic
+      let lead;
+      let resolvedId;
+      let lookupMethod;
+
+      // Primary lookup attempt
+      if (leadId) {
+        lead = await storage.getLead(leadId);
+        if (lead) {
+          resolvedId = leadId;
+          lookupMethod = "leadId";
+        } else if (scanId) {
+          // Fallback: if leadId lookup failed but scanId exists, try scanId flow
+          logger.info('LeadId lookup failed, attempting scanId fallback', { leadId, scanId });
+          
+          // First try to find existing payment by scanId
+          const existingPaymentByScan = await storage.getPaymentByScanId(scanId);
+          if (existingPaymentByScan) {
+            lead = await storage.getLead(existingPaymentByScan.leadId);
+            if (lead) {
+              resolvedId = scanId;
+              lookupMethod = "scanId-via-payment";
+            }
+          }
+          
+          // If still no lead, try treating scanId as leadId (backwards compatibility)
+          if (!lead) {
+            lead = await storage.getLead(scanId);
+            if (lead) {
+              resolvedId = scanId;
+              lookupMethod = "scanId-as-leadId";
+            }
+          }
+        }
+      } else if (scanId) {
+        // Pure scanId flow - multiple strategies
+        
+        // Strategy 1: Find existing payment by scanId
+        const existingPaymentByScan = await storage.getPaymentByScanId(scanId);
+        if (existingPaymentByScan) {
+          lead = await storage.getLead(existingPaymentByScan.leadId);
+          if (lead) {
+            resolvedId = scanId;
+            lookupMethod = "scanId-via-payment";
+          }
+        }
+        
+        // Strategy 2: Treat scanId as leadId (backwards compatibility)
+        if (!lead) {
+          lead = await storage.getLead(scanId);
+          if (lead) {
+            resolvedId = scanId;
+            lookupMethod = "scanId-as-leadId";
+          }
+        }
+        
+        // Strategy 3: Check if scanId corresponds to a valid scan result
+        if (!lead) {
+          const scanResult = await storage.getScanResult(scanId);
+          if (scanResult) {
+            // For valid scans without leads, we could create a minimal lead
+            // For now, just provide a better error message
+            logger.warn('Valid scan found but no associated lead for payment', { scanId });
+            res.status(400).json({ 
+              success: false, 
+              error: "This scan does not have an associated lead for payment. Please contact support.",
+              scanId: scanId,
+              hasScanResult: true
+            });
+            return;
+          }
+        }
+      }
+      
+      if (!lead) {
+        logger.warn('No valid lead found for checkout', { leadId, scanId, lookupMethod });
+        res.status(404).json({ 
+          success: false, 
+          error: leadId && scanId 
+            ? "Neither Lead ID nor Scan ID could be resolved to a valid lead"
+            : leadId 
+              ? "Lead not found"
+              : "Scan not found or not associated with a lead",
+          providedLeadId: leadId || null,
+          providedScanId: scanId || null
+        });
+        return;
+      }
+
+      logger.info('Lead successfully resolved for checkout', { 
+        leadId: lead.id,
+        resolvedId,
+        lookupMethod,
+        providedLeadId: leadId,
+        providedScanId: scanId
+      });
+
+      // Check for existing payments - improved idempotency
+      const existingPayment = await storage.getPaymentByLeadId(lead.id);
+      
+      if (existingPayment) {
+        if (existingPayment.status === "paid") {
+          res.status(400).json({ 
+            success: false, 
+            error: "Payment already completed for this lead",
+            paymentId: existingPayment.id
+          });
+          return;
+        }
+        
+        // If payment is initialized and has a valid Stripe session, reuse it
+        if (existingPayment.status === "initialized" && existingPayment.stripeSessionId) {
+          try {
+            const existingSession = await stripe.checkout.sessions.retrieve(existingPayment.stripeSessionId);
+            if (existingSession.status === 'open') {
+              logger.info('Reusing existing checkout session', { 
+                leadId: lead.id,
+                scanId,
+                paymentId: existingPayment.id,
+                sessionId: existingSession.id
+              });
+              
+              res.json({ 
+                success: true, 
+                sessionId: existingSession.id,
+                checkoutUrl: existingSession.url,
+                paymentId: existingPayment.id
+              });
+              return;
+            }
+          } catch (error) {
+            logger.warn('Existing session invalid, creating new one', { 
+              sessionId: existingPayment.stripeSessionId,
+              error: (error as Error).message
+            });
+          }
+        }
+      }
+
+      logger.info('Creating Stripe checkout session', { 
+        leadId: lead.id,
+        scanId, 
+        businessName: lead.businessName,
+        amount: FULL_SCAN_PRICE_AMOUNT
+      });
+
+      // Generate idempotency key
+      const idempotencyKey = `checkout_${lead.id}_${Date.now()}`;
+
+      // Create Stripe Checkout Session with idempotency
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: 'Full Business Scan Report',
+                description: `Complete business analysis for ${lead.businessName}`,
+              },
+              unit_amount: FULL_SCAN_PRICE_AMOUNT,
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment',
+        success_url: `${req.protocol}://${req.get('host')}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${req.protocol}://${req.get('host')}/payment-cancel`,
+        metadata: {
+          leadId: lead.id,
+          scanId: scanId || '',
+          businessName: lead.businessName,
+        },
+        customer_email: lead.email || undefined,
+      }, {
+        idempotencyKey: idempotencyKey
+      });
+
+      // Create or update payment record in database
+      let payment;
+      if (existingPayment) {
+        payment = await storage.updatePayment(existingPayment.id, {
+          stripeSessionId: session.id,
+          status: 'initialized',
+          scanId: scanId || existingPayment.scanId
+        });
+      } else {
+        payment = await storage.createPayment({
+          leadId: lead.id,
+          scanId: scanId || undefined,
+          amount: FULL_SCAN_PRICE_AMOUNT,
+          currency: 'usd',
+          status: 'initialized',
+          stripeSessionId: session.id,
+        });
+      }
+
+      logger.info('Stripe checkout session created', { 
+        leadId: lead.id,
+        scanId,
+        paymentId: payment?.id,
+        sessionId: session.id,
+        idempotencyKey
+      });
+
+      res.json({ 
+        success: true, 
+        sessionId: session.id,
+        checkoutUrl: session.url,
+        paymentId: payment?.id
+      });
+    } catch (error) {
+      logger.error('Payment checkout failed', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to create checkout session" 
+      });
+    }
+  });
+
+  // Get payment status by scanId (handles scanId to leadId mapping)
+  app.get("/api/payments/status/:scanId", async (req: Request, res: Response) => {
+    try {
+      const { scanId } = req.params;
+      
+      // First try to get payment by scanId
+      let payment = await storage.getPaymentByScanId(scanId);
+      let lead = null;
+      
+      if (payment) {
+        // If payment exists with scanId, get the associated lead
+        lead = await storage.getLead(payment.leadId);
+      } else {
+        // Fallback: treat scanId as leadId for backwards compatibility
+        lead = await storage.getLead(scanId);
+        if (lead) {
+          payment = await storage.getPaymentByLeadId(lead.id);
+        }
+      }
+      
+      if (!lead) {
+        res.status(404).json({ 
+          success: false, 
+          error: "Scan or lead not found" 
+        });
+        return;
+      }
+
+      const hasAccess = payment?.status === "paid" || lead.status === "converted";
+      
+      logger.info('Payment status check', { 
+        scanId,
+        leadId: lead.id, 
+        hasPayment: !!payment,
+        paymentStatus: payment?.status,
+        leadStatus: lead.status,
+        hasAccess
+      });
+
+      res.json({
+        success: true,
+        hasAccess,
+        payment: payment ? {
+          id: payment.id,
+          status: payment.status,
+          amount: payment.amount,
+          currency: payment.currency,
+          createdAt: payment.createdAt
+        } : null,
+        lead: {
+          id: lead.id,
+          status: lead.status,
+          businessName: lead.businessName
+        }
+      });
+    } catch (error) {
+      logger.error('Payment status check failed', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to check payment status" 
+      });
+    }
+  });
+
+  // Backend confirmation endpoint for payment success page
+  app.get("/api/payments/confirm/:sessionId", async (req: Request, res: Response) => {
+    try {
+      if (!paymentsEnabled || !stripe) {
+        res.status(400).json({ 
+          success: false, 
+          error: "Payments are not enabled" 
+        });
+        return;
+      }
+
+      const { sessionId } = req.params;
+      
+      if (!sessionId) {
+        res.status(400).json({ 
+          success: false, 
+          error: "Session ID is required" 
+        });
+        return;
+      }
+
+      // Get payment from database
+      const payment = await storage.getPaymentByStripeSessionId(sessionId);
+      if (!payment) {
+        res.status(404).json({ 
+          success: false, 
+          error: "Payment session not found" 
+        });
+        return;
+      }
+
+      // Get associated lead
+      const lead = await storage.getLead(payment.leadId);
+      if (!lead) {
+        res.status(404).json({ 
+          success: false, 
+          error: "Associated lead not found" 
+        });
+        return;
+      }
+
+      // Retrieve session from Stripe for verification
+      let stripeSession;
+      try {
+        stripeSession = await stripe.checkout.sessions.retrieve(sessionId);
+      } catch (error) {
+        logger.error('Failed to retrieve Stripe session', error as Error, { sessionId });
+        res.status(400).json({ 
+          success: false, 
+          error: "Invalid session ID" 
+        });
+        return;
+      }
+
+      // Check if payment was successful
+      const isSuccessful = stripeSession.payment_status === 'paid' && payment.status === 'paid';
+      
+      logger.info('Payment confirmation check', { 
+        sessionId,
+        paymentId: payment.id,
+        leadId: lead.id,
+        stripeStatus: stripeSession.payment_status,
+        dbStatus: payment.status,
+        isSuccessful
+      });
+
+      res.json({
+        success: true,
+        isSuccessful,
+        payment: {
+          id: payment.id,
+          status: payment.status,
+          amount: payment.amount,
+          currency: payment.currency,
+          createdAt: payment.createdAt
+        },
+        lead: {
+          id: lead.id,
+          status: lead.status,
+          businessName: lead.businessName
+        },
+        session: {
+          id: stripeSession.id,
+          status: stripeSession.status,
+          payment_status: stripeSession.payment_status
+        }
+      });
+    } catch (error) {
+      logger.error('Payment confirmation failed', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to confirm payment" 
+      });
+    }
+  });
+
+  // Stripe webhook endpoint
+  app.post("/api/stripe/webhook", async (req: Request, res: Response) => {
+    try {
+      if (!paymentsEnabled || !stripe) {
+        logger.warn('Stripe webhook received but payments are disabled');
+        res.status(400).json({ 
+          success: false, 
+          error: "Payments are not enabled" 
+        });
+        return;
+      }
+
+      if (!STRIPE_WEBHOOK_SECRET) {
+        logger.error('Stripe webhook secret not configured');
+        res.status(500).json({ 
+          success: false, 
+          error: "Webhook secret not configured" 
+        });
+        return;
+      }
+
+      const sig = req.headers['stripe-signature'] as string;
+      let event: Stripe.Event;
+
+      try {
+        event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+      } catch (err) {
+        logger.error('Stripe webhook signature verification failed', err as Error);
+        res.status(400).json({ 
+          success: false, 
+          error: "Webhook signature verification failed" 
+        });
+        return;
+      }
+
+      logger.info('Stripe webhook received', { 
+        eventType: event.type,
+        eventId: event.id 
+      });
+
+      // Handle the event
+      switch (event.type) {
+        case 'checkout.session.completed': {
+          const session = event.data.object as Stripe.Checkout.Session;
+          const leadId = session.metadata?.leadId;
+          const scanId = session.metadata?.scanId;
+          
+          if (!leadId) {
+            logger.warn('Checkout session completed without leadId', { 
+              sessionId: session.id, 
+              eventId: event.id 
+            });
+            break;
+          }
+
+          // Check if this event has already been processed (idempotency)
+          const existingEvents = await storage.getLeadEvents(leadId);
+          const alreadyProcessed = existingEvents.some(e => 
+            e.eventType === 'payment_completed' && 
+            e.details && 
+            typeof e.details === 'object' &&
+            'stripeEventId' in e.details &&
+            e.details.stripeEventId === event.id
+          );
+          
+          if (alreadyProcessed) {
+            logger.info('Webhook event already processed', { 
+              eventId: event.id, 
+              sessionId: session.id, 
+              leadId 
+            });
+            break;
+          }
+
+          logger.info('Processing checkout session completion', { 
+            sessionId: session.id, 
+            leadId,
+            scanId,
+            paymentStatus: session.payment_status,
+            eventId: event.id
+          });
+
+          // Update payment status
+          const payment = await storage.getPaymentByStripeSessionId(session.id);
+          if (payment) {
+            await storage.updatePayment(payment.id, {
+              status: session.payment_status === 'paid' ? 'paid' : 'failed',
+              stripePaymentIntentId: session.payment_intent as string,
+            });
+
+            // Update lead status to converted if payment succeeded
+            if (session.payment_status === 'paid') {
+              await storage.updateLead(leadId, {
+                status: 'converted'
+              });
+
+              // Log conversion event with event ID for idempotency
+              await storage.createLeadEvent({
+                leadId: leadId,
+                eventType: "payment_completed",
+                details: {
+                  paymentId: payment.id,
+                  sessionId: session.id,
+                  scanId: scanId || null,
+                  amount: payment.amount,
+                  stripeEventId: event.id, // Store event ID for idempotency
+                  convertedAt: new Date().toISOString()
+                }
+              });
+
+              logger.info('Lead converted after successful payment', { 
+                leadId, 
+                paymentId: payment.id,
+                sessionId: session.id,
+                scanId,
+                eventId: event.id
+              });
+            } else {
+              // Log failed payment event
+              await storage.createLeadEvent({
+                leadId: leadId,
+                eventType: "payment_failed",
+                details: {
+                  paymentId: payment.id,
+                  sessionId: session.id,
+                  scanId: scanId || null,
+                  stripeEventId: event.id,
+                  failedAt: new Date().toISOString()
+                }
+              });
+            }
+          }
+          break;
+        }
+
+        case 'payment_intent.succeeded': {
+          const paymentIntent = event.data.object as Stripe.PaymentIntent;
+          
+          logger.info('Payment intent succeeded', { 
+            paymentIntentId: paymentIntent.id,
+            amount: paymentIntent.amount
+          });
+
+          // Update payment status if we find it by payment intent ID
+          const payment = await storage.getPaymentByStripePaymentIntentId(paymentIntent.id);
+          if (payment) {
+            await storage.updatePayment(payment.id, {
+              status: 'paid'
+            });
+          }
+          break;
+        }
+
+        default:
+          logger.info('Unhandled Stripe webhook event type', { 
+            eventType: event.type 
+          });
+      }
+
+      res.json({ success: true, received: true });
+    } catch (error) {
+      logger.error('Stripe webhook processing failed', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Webhook processing failed" 
       });
     }
   });

@@ -15,6 +15,9 @@ if (config.ENABLE_COMPRESSION) {
   app.use(compression());
 }
 
+// Configure raw body parsing for Stripe webhook before JSON middleware
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 

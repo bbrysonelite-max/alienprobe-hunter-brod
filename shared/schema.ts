@@ -81,6 +81,18 @@ export const emailLog = pgTable("email_log", {
   error: text("error"),
 });
 
+export const payments = pgTable("payments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  leadId: varchar("lead_id").notNull().references(() => leads.id),
+  scanId: varchar("scan_id").references(() => scanResults.id), // Optional link to scan_results
+  amount: integer("amount").notNull(), // Amount in cents
+  currency: text("currency").notNull().default("usd"),
+  status: text("status").notNull().default("initialized"), // initialized/paid/failed/refunded
+  stripeSessionId: text("stripe_session_id"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -155,6 +167,19 @@ export const insertEmailLogSchema = createInsertSchema(emailLog).omit({
   status: z.enum(["sent", "delivered", "bounced", "failed"]),
 });
 
+export const insertPaymentSchema = createInsertSchema(payments).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  leadId: z.string().min(1, "Lead ID is required"),
+  scanId: z.string().optional(), // Optional scan ID reference
+  amount: z.number().int().positive("Amount must be positive"),
+  currency: z.string().min(1, "Currency is required").optional(),
+  status: z.enum(["initialized", "paid", "failed", "refunded"]).optional(),
+  stripeSessionId: z.string().optional(),
+  stripePaymentIntentId: z.string().optional(),
+});
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type InsertScanResult = z.infer<typeof insertScanResultSchema>;
@@ -169,3 +194,5 @@ export type InsertEmailQueue = z.infer<typeof insertEmailQueueSchema>;
 export type EmailQueue = typeof emailQueue.$inferSelect;
 export type InsertEmailLog = z.infer<typeof insertEmailLogSchema>;
 export type EmailLog = typeof emailLog.$inferSelect;
+export type InsertPayment = z.infer<typeof insertPaymentSchema>;
+export type Payment = typeof payments.$inferSelect;
