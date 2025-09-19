@@ -30,16 +30,17 @@ export default function PaymentSuccess() {
 
   // Cache invalidation effect when payment is successful
   useEffect(() => {
-    if (isSuccessful && confirmation?.lead?.id) {
-      const leadId = confirmation.lead.id;
+    if (isSuccessful && confirmation?.session?.metadata?.scanId) {
+      const scanId = confirmation.session.metadata.scanId;
       
-      // Invalidate payment status and scan result caches
+      // Invalidate payment status and scan result caches using scanId
+      // This matches the query keys used throughout the app
       queryClient.invalidateQueries({ 
-        queryKey: ["/api/payments/status", leadId]
+        queryKey: ["/api/payments/status", scanId]
       });
       
       queryClient.invalidateQueries({ 
-        queryKey: ["/api/results", leadId] 
+        queryKey: ["/api/results", scanId] 
       });
       
       // Also invalidate the all results list
@@ -47,20 +48,9 @@ export default function PaymentSuccess() {
         queryKey: ["/api/results"] 
       });
 
-      // If we have metadata about scanId, invalidate those caches too
-      if (confirmation.session?.metadata?.scanId) {
-        const scanId = confirmation.session.metadata.scanId;
-        queryClient.invalidateQueries({ 
-          queryKey: ["/api/payments/status", scanId]
-        });
-        queryClient.invalidateQueries({ 
-          queryKey: ["/api/results", scanId] 
-        });
-      }
-
-      console.log('Payment successful - invalidated relevant caches for', { 
-        leadId, 
-        scanId: confirmation.session?.metadata?.scanId 
+      console.log('Payment successful - invalidated relevant caches for scanId:', { 
+        scanId,
+        leadId: confirmation.lead?.id 
       });
     }
   }, [isSuccessful, confirmation]);
