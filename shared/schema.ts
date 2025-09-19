@@ -25,6 +25,12 @@ export const leads = pgTable("leads", {
   website: text("website"),
   contactName: text("contact_name"),
   email: text("email"),
+  role: text("role"),
+  companySize: text("company_size"),
+  industry: text("industry"),
+  budgetRange: text("budget_range"),
+  timeframe: text("timeframe"),
+  painPoints: text("pain_points"),
   emailDomain: text("email_domain"),
   status: text("status").notNull().default("pending"), // pending/verified/flagged/converted/disqualified
   isPersonalEmail: boolean("is_personal_email").default(false),
@@ -90,11 +96,23 @@ export const insertScanResultSchema = createInsertSchema(scanResults).omit({
 export const insertLeadSchema = createInsertSchema(leads).omit({
   id: true,
   createdAt: true,
+  emailDomain: true,
+  isPersonalEmail: true,
+  isDisposable: true,
 }).extend({
   businessName: z.string().min(1, "Business name is required"),
   website: z.string().url("Valid URL required").optional(),
+  contactName: z.string().min(1, "Contact name is required").optional(),
   email: z.string().email("Valid email required").optional(),
+  role: z.string().min(1, "Role is required").optional(),
+  companySize: z.enum(["1-10", "11-50", "51-200", "201-500", "501-1000", "1000+"]).optional(),
+  industry: z.string().min(1, "Industry is required").optional(),
+  budgetRange: z.enum(["<5k", "5k-25k", "25k-100k", "100k-500k", "500k+"]).optional(),
+  timeframe: z.enum(["immediate", "1-3months", "3-6months", "6-12months", "12months+"]).optional(),
+  painPoints: z.string().max(1000, "Pain points must be under 1000 characters").optional(),
   status: z.enum(["pending", "verified", "flagged", "converted", "disqualified"]).optional(),
+  verificationTokenHash: z.string().optional(),
+  verificationExpiresAt: z.date().optional(),
 });
 
 export const insertLeadEventSchema = createInsertSchema(leadEvents).omit({

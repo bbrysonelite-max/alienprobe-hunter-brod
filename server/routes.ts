@@ -1,10 +1,11 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertScanResultSchema } from "@shared/schema";
+import { insertScanResultSchema, insertLeadSchema } from "@shared/schema";
 import { z } from "zod";
 import { healthCheck, livenessProbe, readinessProbe, metricsEndpoint, simulateError } from "./monitoring";
 import { logger } from "./logger";
+import crypto from "crypto";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // API Routes for Alien Probe business scanning
@@ -82,6 +83,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/scan", handleScanRequest);
   app.post("/api/free-scan", handleScanRequest);
 
+  // Lead intake endpoint
+  app.post("/api/leads", async (req: Request, res: Response) => {
+    try {
+      const validatedData = insertLeadSchema.parse(req.body);
+      
+      logger.info('Lead submission initiated', { 
+        businessName: validatedData.businessName,
+        hasEmail: !!validatedData.email,
+        industry: validatedData.industry,
+        companySize: validatedData.companySize
+      });
+
+      // Generate verification token if email is provided
+      let verificationToken = null;
+      let verificationTokenHash = null;
+      let verificationExpiresAt = null;
+      
+      if (validatedData.email) {
+        // Generate a secure random token (32 bytes = 64 hex chars)
+        verificationToken = crypto.randomBytes(32).toString('hex');
+        // Hash the token for secure storage
+        verificationTokenHash = crypto.createHash('sha256').update(verificationToken).digest('hex');
+        // Set expiry to 24 hours from now
+        verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      }
+
+      // Create lead in database (domain filtering is handled in storage)
+      const lead = await storage.createLead({
+        ...validatedData,
+        verificationTokenHash,
+        verificationExpiresAt,
+      });
+
+      logger.info('Lead created successfully', { 
+        leadId: lead.id, 
+        status: lead.status,
+        isPersonalEmail: lead.isPersonalEmail,
+        isDisposable: lead.isDisposable
+      });
+
+      // Log lead creation event
+      await storage.createLeadEvent({
+        leadId: lead.id,
+        eventType: "lead_created",
+        details: {
+          source: "api",
+          userAgent: req.get('User-Agent'),
+          ip: req.ip,
+          hasVerificationToken: !!verificationToken
+        }
+      });
+
+      // Send verification email in real implementation
+      // Log verification initiation without exposing sensitive token
+      if (verificationToken && validatedData.email) {
+        const verificationUrl = `${req.protocol}://${req.get('host')}/api/verify-email?token=${verificationToken}`;
+        logger.info('Verification email initiated', { 
+          leadId: lead.id, 
+          emailDomain: validatedData.email.split('@')[1],
+          verificationTokenLength: verificationToken.length
+        });
+      }
+
+      res.json({ 
+        success: true, 
+        leadId: lead.id,
+        status: lead.status,
+        message: lead.status === "flagged" ? "Lead created but requires review" : "Lead created successfully",
+        ...(verificationToken && { 
+          message: "Lead created successfully. Please check your email for verification.",
+          verificationRequired: true 
+        })
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        logger.warn('Lead submission validation failed', { errors: error.errors });
+        res.status(400).json({ 
+          success: false, 
+          error: "Validation failed", 
+          details: error.errors 
+        });
+      } else {
+        logger.error('Lead submission failed', error as Error);
+        res.status(500).json({ 
+          success: false, 
+          error: "Internal server error" 
+        });
+      }
+    }
+  });
+
   // Get all scan results
   app.get("/api/results", async (req, res) => {
     try {
@@ -119,6 +211,138 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ 
         success: false, 
         error: "Failed to fetch result" 
+      });
+    }
+  });
+
+  // Email verification endpoint
+  app.get("/api/verify-email", async (req: Request, res: Response) => {
+    try {
+      const { token } = req.query;
+      
+      if (!token || typeof token !== 'string') {
+        logger.warn('Email verification attempted without token');
+        res.status(400).json({ 
+          success: false, 
+          error: "Verification token is required" 
+        });
+        return;
+      }
+
+      // Hash the provided token to match stored hash
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      
+      // Look up lead by verification token hash
+      const lead = await storage.getLeadByVerificationToken(tokenHash);
+      
+      if (!lead) {
+        logger.warn('Email verification failed - invalid or expired token', { tokenHash: tokenHash.substring(0, 8) + '...' });
+        res.status(400).json({ 
+          success: false, 
+          error: "Invalid or expired verification token" 
+        });
+        return;
+      }
+
+      // Mark lead as verified and clear verification token
+      const updatedLead = await storage.updateLead(lead.id, {
+        status: "verified",
+        verificationTokenHash: null,
+        verificationExpiresAt: null
+      });
+
+      if (!updatedLead) {
+        logger.error('Failed to update lead after verification', { leadId: lead.id });
+        res.status(500).json({ 
+          success: false, 
+          error: "Failed to complete verification" 
+        });
+        return;
+      }
+
+      // Log verification event
+      await storage.createLeadEvent({
+        leadId: lead.id,
+        eventType: "email_verified",
+        details: {
+          verifiedAt: new Date().toISOString(),
+          userAgent: req.get('User-Agent'),
+          ip: req.ip
+        }
+      });
+
+      logger.info('Email verification successful', { 
+        leadId: lead.id, 
+        email: lead.email 
+      });
+
+      res.json({ 
+        success: true, 
+        message: "Email verified successfully",
+        leadId: lead.id
+      });
+    } catch (error) {
+      logger.error('Email verification failed', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Internal server error" 
+      });
+    }
+  });
+
+  // Admin endpoint to get leads with pagination and filtering
+  app.get("/api/leads", async (req: Request, res: Response) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = Math.min(parseInt(req.query.limit as string) || 20, 100); // Max 100 per page
+      const status = req.query.status as string;
+      
+      logger.info('Admin leads request', { page, limit, status });
+      
+      // Get paginated leads
+      const { leads, total } = await storage.getLeadsPaginated(page, limit, status);
+      
+      // Get event counts for each lead (for future use)
+      const leadsWithEventCounts = await Promise.all(
+        leads.map(async (lead) => {
+          const events = await storage.getLeadEvents(lead.id);
+          return {
+            ...lead,
+            eventCount: events.length,
+            lastEventAt: events[0]?.createdAt || null
+          };
+        })
+      );
+      
+      const totalPages = Math.ceil(total / limit);
+      
+      logger.info('Admin leads response', { 
+        leadsCount: leads.length, 
+        total, 
+        page, 
+        totalPages 
+      });
+      
+      res.json({
+        success: true,
+        data: leadsWithEventCounts,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1
+        },
+        filters: {
+          status: status || null
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to fetch leads', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to fetch leads" 
       });
     }
   });
