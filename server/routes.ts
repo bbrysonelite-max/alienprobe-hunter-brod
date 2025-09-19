@@ -7,6 +7,7 @@ import { healthCheck, livenessProbe, readinessProbe, metricsEndpoint, simulateEr
 import { logger } from "./logger";
 import crypto from "crypto";
 import Stripe from "stripe";
+import { processChatMessage, isChatEnabled } from "./chat";
 
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -15,7 +16,7 @@ const STRIPE_PAYMENT_LINK_URL = process.env.STRIPE_PAYMENT_LINK_URL;
 const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "4900"); // Default $49.00
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20", // Use latest API version
+  apiVersion: "2025-08-27.basil", // Use latest API version
 }) : null;
 
 const paymentsEnabled = !!STRIPE_SECRET_KEY;
@@ -125,8 +126,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create lead in database (domain filtering is handled in storage)
       const lead = await storage.createLead({
         ...validatedData,
-        verificationTokenHash,
-        verificationExpiresAt,
+        verificationTokenHash: verificationTokenHash || undefined,
+        verificationExpiresAt: verificationExpiresAt || undefined,
       });
 
       logger.info('Lead created successfully', { 
@@ -317,7 +318,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       if (!updatedLead) {
-        logger.error('Failed to update lead after verification', { leadId: lead.id });
+        logger.error('Failed to update lead after verification', new Error('Lead update failed'), { leadId: lead.id });
         res.status(500).json({ 
           success: false, 
           error: "Failed to complete verification" 
@@ -1225,6 +1226,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ 
         success: false, 
         error: "Webhook processing failed" 
+      });
+    }
+  });
+
+  // Chat API endpoints
+  app.post("/api/chat", async (req: Request, res: Response) => {
+    try {
+      const { message, context } = req.body;
+
+      if (!message || typeof message !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: "Message is required and must be a string"
+        });
+        return;
+      }
+
+      if (message.length > 2000) {
+        res.status(400).json({
+          success: false,
+          error: "Message too long (max 2000 characters)"
+        });
+        return;
+      }
+
+      logger.info('Chat message received', { 
+        messageLength: message.length,
+        hasContext: !!context
+      });
+
+      const chatResponse = await processChatMessage({ message, context });
+
+      res.json({
+        success: chatResponse.success,
+        response: chatResponse.response,
+        ...(chatResponse.error && { error: chatResponse.error })
+      });
+
+    } catch (error) {
+      logger.error('Chat API error', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Internal server error"
+      });
+    }
+  });
+
+  app.get("/api/chat/status", async (req: Request, res: Response) => {
+    try {
+      const enabled = isChatEnabled();
+      
+      res.json({
+        success: true,
+        chatEnabled: enabled,
+        provider: enabled ? "openai" : null
+      });
+    } catch (error) {
+      logger.error('Chat status check failed', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to check chat status"
       });
     }
   });

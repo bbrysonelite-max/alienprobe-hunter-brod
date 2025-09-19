@@ -9,6 +9,7 @@ import ScanDetail from "@/pages/scan-detail";
 import PaymentSuccess from "@/pages/payment-success";
 import PaymentCancel from "@/pages/payment-cancel";
 import NotFound from "@/pages/not-found";
+import ChatWidget from "@/components/ChatWidget";
 
 function Router() {
   return (
@@ -29,6 +30,7 @@ function App() {
       <TooltipProvider>
         <Toaster />
         <Router />
+        <ChatWidget />
       </TooltipProvider>
     </QueryClientProvider>
   );

@@ -71,8 +71,8 @@ export default function ScanDetail() {
     isLoading: scanLoading,
     error: scanError,
   } = useQuery<ScanResult>({
-    queryKey: ["/api/results", scanId],
-    queryFn: () => apiRequest(`/api/results/${scanId}`),
+    queryKey: ["/api", "results", scanId],
+    enabled: !!scanId,
   });
 
   // Get payment configuration
@@ -80,7 +80,7 @@ export default function ScanDetail() {
     data: paymentConfig,
     isLoading: configLoading
   } = useQuery<PaymentConfig>({
-    queryKey: ["/api/payments/config"],
+    queryKey: ["/api", "payments", "config"],
   });
 
   // Get payment status for this scan (using leadId)
@@ -89,19 +89,15 @@ export default function ScanDetail() {
     isLoading: statusLoading,
     refetch: refetchStatus
   } = useQuery<PaymentStatus>({
-    queryKey: ["/api/payments/status", scanId],
-    queryFn: () => apiRequest(`/api/payments/status/${scanId}`),
+    queryKey: ["/api", "payments", "status", scanId],
     enabled: !!scanId,
   });
 
   // Create checkout session mutation
   const checkoutMutation = useMutation({
     mutationFn: async (scanId: string) => {
-      const response = await apiRequest("/api/payments/checkout", {
-        method: "POST",
-        body: JSON.stringify({ scanId }),
-      });
-      return response;
+      const response = await apiRequest("POST", "/api/payments/checkout", { scanId });
+      return response.json();
     },
     onSuccess: (data) => {
       if (data.checkoutUrl) {
