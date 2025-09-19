@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { config, isProduction, getAllowedOrigins, isCorsCredentialsAllowed, validateDatabaseConnection, logConfiguration } from "./config";
 import { logger, requestLoggingMiddleware, errorLoggingMiddleware, logApplicationStart, logApplicationReady } from "./logger";
+import { dbInitializer } from "./database/init";
 import compression from "compression";
 import path from "path";
 import fs from "fs";
@@ -62,6 +63,13 @@ const distPath = path.resolve(import.meta.dirname, "dist");
   // Validate configuration and database connection
   validateDatabaseConnection();
   logConfiguration();
+  
+  // Initialize database (migrations + seeding if needed)
+  const dbReady = await dbInitializer.initializeForStartup();
+  if (!dbReady) {
+    logger.error('Failed to initialize database, shutting down');
+    process.exit(1);
+  }
   
   const server = await registerRoutes(app);
 

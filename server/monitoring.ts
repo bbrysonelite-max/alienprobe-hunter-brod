@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { logger, logHealthCheck } from './logger';
 import { config } from './config';
 import { db } from './db';
+import { dbInitializer } from './database/init';
 import os from 'os';
 
 // Health check status interface
@@ -32,20 +33,22 @@ interface HealthStatus {
   };
 }
 
-// Database health check
-async function checkDatabase(): Promise<{ status: 'healthy' | 'unhealthy'; responseTime?: number; error?: string }> {
+// Database health check using the database initializer
+async function checkDatabase(): Promise<{ status: 'healthy' | 'unhealthy'; responseTime?: number; error?: string; details?: any }> {
   try {
-    const startTime = Date.now();
+    const healthStatus = await dbInitializer.getHealthStatus();
     
-    // Simple query to test database connection
-    await db.execute('SELECT 1');
-    
-    const responseTime = Date.now() - startTime;
-    logHealthCheck('database', 'healthy', { responseTime: `${responseTime}ms` });
+    logHealthCheck('database', healthStatus.healthy ? 'healthy' : 'unhealthy', {
+      responseTime: `${healthStatus.details.responseTime}ms`,
+      connected: healthStatus.details.connected,
+      schemaValid: healthStatus.details.schemaValid,
+      hasData: healthStatus.details.hasData,
+    });
     
     return {
-      status: 'healthy',
-      responseTime,
+      status: healthStatus.healthy ? 'healthy' : 'unhealthy',
+      responseTime: healthStatus.details.responseTime,
+      details: healthStatus.details,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown database error';
@@ -167,21 +170,22 @@ export function livenessProbe(req: Request, res: Response): void {
 // Readiness probe for container orchestration
 export async function readinessProbe(req: Request, res: Response): Promise<void> {
   try {
-    // Quick database check for readiness
-    const databaseCheck = await checkDatabase();
+    // Use the database initializer for a more comprehensive readiness check
+    const isConnected = await dbInitializer.isConnected();
     
-    if (databaseCheck.status === 'healthy') {
+    if (isConnected) {
       res.status(200).json({
         status: 'ready',
         timestamp: new Date().toISOString(),
-        database: databaseCheck.status,
+        database: 'connected',
+        version: config.APP_VERSION,
       });
     } else {
       res.status(503).json({
         status: 'not ready',
         timestamp: new Date().toISOString(),
-        database: databaseCheck.status,
-        error: databaseCheck.error,
+        database: 'disconnected',
+        error: 'Database connection failed',
       });
     }
   } catch (error) {

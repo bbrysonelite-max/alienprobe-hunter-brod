@@ -1,8 +1,10 @@
 # Overview
 
-This is the "Alien Probe Business Scanner" - a full-stack web application that provides business analysis and scanning capabilities. The application allows users to input business information (name and optional website) and generates scan results with insights about the business. It features a modern React frontend with a Node.js/Express backend and supports both PostgreSQL (via Drizzle ORM) and Flask-based implementations.
+This is the "Alien Probe Business Scanner" - a production-ready, full-stack web application that provides business analysis and scanning capabilities. The application allows users to input business information (name and optional website) and generates scan results with insights about the business. It features a modern React frontend with a Node.js/Express backend and comprehensive PostgreSQL integration via Drizzle ORM.
 
-The project includes a complete business scanning workflow with real-time status updates, a results dashboard, and a sleek space-themed UI design. The application simulates business analysis by generating mock insights and scores.
+The project includes a complete business scanning workflow with real-time status updates, a results dashboard, sleek space-themed UI design, and enterprise-grade infrastructure including monitoring, logging, database migrations, and health checks. The application simulates business analysis by generating mock insights and scores.
+
+**Production Status**: ✅ Fully deployed and operational as of September 19, 2025
 
 # User Preferences
 
@@ -19,11 +21,17 @@ Preferred communication style: Simple, everyday language.
 - **Form Handling**: React Hook Form with Zod validation
 
 ## Backend Architecture
-- **Primary Stack**: Node.js with Express and TypeScript
-- **Alternative Stack**: Python Flask (dual implementation)
+- **Primary Stack**: Node.js with Express and TypeScript (Production Implementation)
+- **Alternative Stack**: Python Flask (Legacy/Reference Implementation)
 - **API Design**: RESTful endpoints with JSON communication
 - **Validation**: Zod schemas for type-safe request/response validation
 - **Error Handling**: Centralized error handling with proper HTTP status codes
+- **Production Features**: 
+  - Structured logging with request correlation IDs
+  - Environment configuration validation
+  - Automated database migrations
+  - Health monitoring endpoints
+  - Graceful shutdown handling
 
 ## Data Storage Solutions
 - **Primary Database**: PostgreSQL with Drizzle ORM
@@ -40,6 +48,10 @@ Preferred communication style: Simple, everyday language.
 ## API Structure
 - **POST /api/scan**: Create new business scan with validation
 - **GET /api/results**: Retrieve all scan results with pagination support
+- **GET /api/health**: Comprehensive health check with database, memory, and disk status
+- **GET /api/health/live**: Liveness probe for container orchestration
+- **GET /api/health/ready**: Readiness probe for load balancer integration
+- **GET /api/metrics**: Application metrics endpoint (configurable)
 - **Async Processing**: Simulated background processing with status updates
 
 ## External Dependencies
@@ -55,9 +67,21 @@ Preferred communication style: Simple, everyday language.
 - **Component Architecture**: Reusable UI components with consistent design system
 - **Error Boundaries**: Graceful error handling throughout the application
 - **Progressive Enhancement**: Application works with basic functionality even if JavaScript fails
+- **Production Patterns**: 
+  - Automated database migration system with conflict resolution
+  - Structured logging with correlation IDs and metadata
+  - Environment-based configuration with validation
+  - Health check endpoints for monitoring and orchestration
+  - Graceful error handling and recovery mechanisms
 
 ## Security Considerations
 - **Input Validation**: Server-side validation using Zod schemas
 - **URL Validation**: Proper URL parsing and validation for website inputs
 - **CORS Configuration**: Proper cross-origin resource sharing setup
 - **Environment Variables**: Secure configuration management for database connections
+- **Production Security**: 
+  - Sensitive data masking in logs
+  - Secure database connection pooling
+  - Request sanitization and validation
+  - Session management with secure secrets
+  - HTTPS-ready configuration
