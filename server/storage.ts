@@ -3,6 +3,9 @@ import {
   scanResults, 
   leads, 
   leadEvents,
+  emailTemplates,
+  emailQueue,
+  emailLog,
   type User, 
   type InsertUser, 
   type ScanResult, 
@@ -10,10 +13,16 @@ import {
   type Lead,
   type InsertLead,
   type LeadEvent,
-  type InsertLeadEvent
+  type InsertLeadEvent,
+  type EmailTemplate,
+  type InsertEmailTemplate,
+  type EmailQueue,
+  type InsertEmailQueue,
+  type EmailLog,
+  type InsertEmailLog
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, count, sql, asc } from "drizzle-orm";
+import { eq, desc, and, count, sql, asc, or, gte, lte } from "drizzle-orm";
 import { classifyEmailDomain, shouldFlagLead, getFlaggingReason } from "./utils/emailDomainFilter";
 
 export interface IStorage {
@@ -40,6 +49,27 @@ export interface IStorage {
   // Lead event operations
   getLeadEvents(leadId: string): Promise<LeadEvent[]>;
   createLeadEvent(event: InsertLeadEvent): Promise<LeadEvent>;
+
+  // Email template operations
+  getEmailTemplate(key: string): Promise<EmailTemplate | undefined>;
+  getAllEmailTemplates(): Promise<EmailTemplate[]>;
+  getEnabledEmailTemplates(): Promise<EmailTemplate[]>;
+  createEmailTemplate(template: InsertEmailTemplate): Promise<EmailTemplate>;
+  updateEmailTemplate(id: string, updates: Partial<EmailTemplate>): Promise<EmailTemplate | undefined>;
+
+  // Email queue operations
+  getEmailQueue(id: string): Promise<EmailQueue | undefined>;
+  getEmailQueueByLead(leadId: string): Promise<EmailQueue[]>;
+  getReadyEmails(limit?: number): Promise<EmailQueue[]>;
+  getRetryableEmails(limit?: number): Promise<EmailQueue[]>;
+  getEmailQueuePaginated(page: number, limit: number, statusFilter?: string, includeFuture?: boolean): Promise<{ emails: EmailQueue[], total: number }>;
+  createEmailQueue(emailQueue: InsertEmailQueue): Promise<EmailQueue>;
+  updateEmailQueue(id: string, updates: Partial<EmailQueue>): Promise<EmailQueue | undefined>;
+  deleteEmailQueue(id: string): Promise<boolean>;
+
+  // Email log operations
+  getEmailLogsByLead(leadId: string): Promise<EmailLog[]>;
+  createEmailLog(emailLog: InsertEmailLog): Promise<EmailLog>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -296,6 +326,169 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return event;
+  }
+
+  // Email template operations implementation
+  async getEmailTemplate(key: string): Promise<EmailTemplate | undefined> {
+    const [template] = await db.select().from(emailTemplates).where(eq(emailTemplates.key, key));
+    return template || undefined;
+  }
+
+  async getAllEmailTemplates(): Promise<EmailTemplate[]> {
+    const templates = await db.select().from(emailTemplates).orderBy(asc(emailTemplates.step));
+    return templates;
+  }
+
+  async getEnabledEmailTemplates(): Promise<EmailTemplate[]> {
+    const templates = await db
+      .select()
+      .from(emailTemplates)
+      .where(eq(emailTemplates.enabled, true))
+      .orderBy(asc(emailTemplates.step));
+    return templates;
+  }
+
+  async createEmailTemplate(insertTemplate: InsertEmailTemplate): Promise<EmailTemplate> {
+    const [template] = await db
+      .insert(emailTemplates)
+      .values(insertTemplate)
+      .returning();
+    return template;
+  }
+
+  async updateEmailTemplate(id: string, updates: Partial<EmailTemplate>): Promise<EmailTemplate | undefined> {
+    const [template] = await db
+      .update(emailTemplates)
+      .set(updates)
+      .where(eq(emailTemplates.id, id))
+      .returning();
+    return template || undefined;
+  }
+
+  // Email queue operations implementation
+  async getEmailQueue(id: string): Promise<EmailQueue | undefined> {
+    const [emailQueueItem] = await db.select().from(emailQueue).where(eq(emailQueue.id, id));
+    return emailQueueItem || undefined;
+  }
+
+  async getEmailQueueByLead(leadId: string): Promise<EmailQueue[]> {
+    const items = await db
+      .select()
+      .from(emailQueue)
+      .where(eq(emailQueue.leadId, leadId))
+      .orderBy(asc(emailQueue.scheduledAt));
+    return items;
+  }
+
+  async getReadyEmails(limit: number = 10): Promise<EmailQueue[]> {
+    const items = await db
+      .select()
+      .from(emailQueue)
+      .where(and(
+        eq(emailQueue.status, "pending"),
+        sql`${emailQueue.scheduledAt} <= NOW()`
+      ))
+      .orderBy(asc(emailQueue.scheduledAt))
+      .limit(limit);
+    return items;
+  }
+
+  async getRetryableEmails(limit: number = 10): Promise<EmailQueue[]> {
+    const items = await db
+      .select()
+      .from(emailQueue)
+      .where(and(
+        eq(emailQueue.status, "retrying"),
+        sql`${emailQueue.nextRetryAt} <= NOW()`
+      ))
+      .orderBy(asc(emailQueue.nextRetryAt))
+      .limit(limit);
+    return items;
+  }
+
+  async createEmailQueue(insertEmailQueue: InsertEmailQueue): Promise<EmailQueue> {
+    const [emailQueueItem] = await db
+      .insert(emailQueue)
+      .values(insertEmailQueue)
+      .returning();
+    return emailQueueItem;
+  }
+
+  async updateEmailQueue(id: string, updates: Partial<EmailQueue>): Promise<EmailQueue | undefined> {
+    const [emailQueueItem] = await db
+      .update(emailQueue)
+      .set(updates)
+      .where(eq(emailQueue.id, id))
+      .returning();
+    return emailQueueItem || undefined;
+  }
+
+  async deleteEmailQueue(id: string): Promise<boolean> {
+    const result = await db.delete(emailQueue).where(eq(emailQueue.id, id)).returning();
+    return result.length > 0;
+  }
+
+  async getEmailQueuePaginated(page: number, limit: number, statusFilter?: string, includeFuture: boolean = false): Promise<{ emails: EmailQueue[], total: number }> {
+    const offset = (page - 1) * limit;
+    
+    // Build where clause based on filters
+    let whereConditions = [];
+    
+    // Filter by status if provided
+    if (statusFilter) {
+      whereConditions.push(eq(emailQueue.status, statusFilter));
+    }
+    
+    // By default, exclude future-scheduled items unless explicitly requested
+    if (!includeFuture) {
+      whereConditions.push(
+        or(
+          lte(emailQueue.scheduledAt, sql`NOW()`),
+          eq(emailQueue.status, 'sent'),
+          eq(emailQueue.status, 'failed')
+        )
+      );
+    }
+    
+    const whereClause = whereConditions.length > 0 ? and(...whereConditions) : undefined;
+    
+    // Get emails with pagination
+    const emailsResult = await db
+      .select()
+      .from(emailQueue)
+      .where(whereClause)
+      .orderBy(desc(emailQueue.scheduledAt))
+      .limit(limit)
+      .offset(offset);
+    
+    // Get total count
+    const countResult = await db
+      .select({ count: count() })
+      .from(emailQueue)
+      .where(whereClause);
+    
+    return {
+      emails: emailsResult,
+      total: countResult[0].count
+    };
+  }
+
+  // Email log operations implementation
+  async getEmailLogsByLead(leadId: string): Promise<EmailLog[]> {
+    const logs = await db
+      .select()
+      .from(emailLog)
+      .where(eq(emailLog.leadId, leadId))
+      .orderBy(desc(emailLog.sentAt));
+    return logs;
+  }
+
+  async createEmailLog(insertEmailLog: InsertEmailLog): Promise<EmailLog> {
+    const [emailLogItem] = await db
+      .insert(emailLog)
+      .values(insertEmailLog)
+      .returning();
+    return emailLogItem;
   }
 }
 

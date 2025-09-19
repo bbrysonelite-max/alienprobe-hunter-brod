@@ -347,6 +347,222 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Email management endpoints
+  
+  // Get email queue status with comprehensive filtering
+  app.get("/api/email/queue", async (req: Request, res: Response) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
+      const status = req.query.status as string;
+      const includeFuture = req.query.includeFuture === 'true';
+      
+      // Use the enhanced storage method for proper database-level filtering
+      const { emails, total } = await storage.getEmailQueuePaginated(page, limit, status, includeFuture);
+      
+      const totalPages = Math.ceil(total / limit);
+      
+      logger.info('Email queue retrieved', { 
+        count: emails.length, 
+        total,
+        page, 
+        limit, 
+        status,
+        includeFuture
+      });
+      
+      res.json({
+        success: true,
+        data: emails,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1
+        },
+        filters: {
+          status: status || null,
+          includeFuture: includeFuture
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to get email queue', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to get email queue" 
+      });
+    }
+  });
+
+  // Manually trigger email processing (for testing)
+  app.post("/api/email/process", async (req: Request, res: Response) => {
+    try {
+      logger.info('Manual email processing triggered');
+      
+      // Import processor dynamically to avoid circular dependencies
+      const { emailProcessor } = await import('./email/processor');
+      
+      // Check if processor is running
+      const status = emailProcessor.getStatus();
+      if (!status.isRunning) {
+        res.status(400).json({
+          success: false,
+          error: "Email processor is not running"
+        });
+        return;
+      }
+      
+      // Actually trigger processing and get results
+      const result = await emailProcessor.triggerNow();
+      
+      res.json({
+        success: true,
+        message: "Email processing completed",
+        processed: result.processed,
+        failed: result.failed,
+        processorStatus: emailProcessor.getStatus()
+      });
+    } catch (error) {
+      logger.error('Failed to trigger email processing', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: error instanceof Error ? error.message : "Failed to trigger email processing" 
+      });
+    }
+  });
+
+  // Schedule test email for a lead
+  app.post("/api/email/test/:leadId", async (req: Request, res: Response) => {
+    try {
+      const { leadId } = req.params;
+      const { templateKey, delay } = req.body;
+      
+      const lead = await storage.getLead(leadId);
+      if (!lead) {
+        res.status(404).json({ 
+          success: false, 
+          error: "Lead not found" 
+        });
+        return;
+      }
+
+      if (!lead.email) {
+        res.status(400).json({ 
+          success: false, 
+          error: "Lead has no email address" 
+        });
+        return;
+      }
+
+      // Import scheduler dynamically
+      const { emailScheduler } = await import('./email/scheduler');
+      
+      // Schedule the email based on template type
+      if (templateKey === 'welcome') {
+        await emailScheduler.scheduleWelcomeEmail(lead);
+      } else if (templateKey === 'verification') {
+        await emailScheduler.scheduleVerificationEmail(lead);
+      } else {
+        // Generic email with custom delay
+        const delayMinutes = parseInt(delay) || 0;
+        await storage.createEmailQueue({
+          leadId: lead.id,
+          templateKey: templateKey || 'welcome',
+          scheduledAt: new Date(Date.now() + (delayMinutes * 60 * 1000)),
+          status: 'pending',
+          retryCount: 0
+        });
+      }
+
+      logger.info('Test email scheduled', { 
+        leadId, 
+        templateKey, 
+        email: lead.email 
+      });
+
+      res.json({
+        success: true,
+        message: "Test email scheduled",
+        leadId: lead.id,
+        templateKey: templateKey || 'welcome'
+      });
+    } catch (error) {
+      logger.error('Failed to schedule test email', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to schedule test email" 
+      });
+    }
+  });
+
+  // Cancel pending emails for a lead
+  app.delete("/api/email/lead/:leadId", async (req: Request, res: Response) => {
+    try {
+      const { leadId } = req.params;
+      
+      const lead = await storage.getLead(leadId);
+      if (!lead) {
+        res.status(404).json({ 
+          success: false, 
+          error: "Lead not found" 
+        });
+        return;
+      }
+
+      // Import scheduler dynamically
+      const { emailScheduler } = await import('./email/scheduler');
+      await emailScheduler.cancelLeadEmails(leadId);
+
+      logger.info('Lead emails cancelled', { leadId });
+
+      res.json({
+        success: true,
+        message: "Lead emails cancelled",
+        leadId
+      });
+    } catch (error) {
+      logger.error('Failed to cancel lead emails', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to cancel lead emails" 
+      });
+    }
+  });
+
+  // Get email logs for a lead
+  app.get("/api/email/logs/:leadId", async (req: Request, res: Response) => {
+    try {
+      const { leadId } = req.params;
+      
+      const lead = await storage.getLead(leadId);
+      if (!lead) {
+        res.status(404).json({ 
+          success: false, 
+          error: "Lead not found" 
+        });
+        return;
+      }
+
+      const logs = await storage.getEmailLogsByLead(leadId);
+      
+      logger.info('Email logs retrieved', { leadId, logCount: logs.length });
+
+      res.json({
+        success: true,
+        data: logs,
+        leadId
+      });
+    } catch (error) {
+      logger.error('Failed to get email logs', error as Error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to get email logs" 
+      });
+    }
+  });
+
   // Health and monitoring endpoints
   app.get("/api/health", healthCheck);
   app.get("/api/health/live", livenessProbe);

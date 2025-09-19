@@ -63,10 +63,12 @@ export const emailQueue = pgTable("email_queue", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   leadId: varchar("lead_id").notNull().references(() => leads.id),
   templateKey: text("template_key").notNull(),
-  dueAt: timestamp("due_at").notNull(),
-  attempts: integer("attempts").default(0),
+  scheduledAt: timestamp("scheduled_at").notNull(),
+  retryCount: integer("retry_count").default(0),
+  nextRetryAt: timestamp("next_retry_at"),
   lastError: text("last_error"),
-  status: text("status").notNull().default("pending"), // pending/sent/failed
+  status: text("status").notNull().default("pending"), // pending/sent/failed/retrying
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const emailLog = pgTable("email_log", {
@@ -134,11 +136,14 @@ export const insertEmailTemplateSchema = createInsertSchema(emailTemplates).omit
 
 export const insertEmailQueueSchema = createInsertSchema(emailQueue).omit({
   id: true,
+  createdAt: true,
 }).extend({
   leadId: z.string().min(1, "Lead ID is required"),
   templateKey: z.string().min(1, "Template key is required"),
-  dueAt: z.date(),
-  status: z.enum(["pending", "sent", "failed"]).optional(),
+  scheduledAt: z.date(),
+  retryCount: z.number().optional(),
+  nextRetryAt: z.date().optional(),
+  status: z.enum(["pending", "sent", "failed", "retrying"]).optional(),
 });
 
 export const insertEmailLogSchema = createInsertSchema(emailLog).omit({

@@ -71,6 +71,34 @@ const distPath = path.resolve(import.meta.dirname, "dist");
     process.exit(1);
   }
   
+  // Initialize email system
+  try {
+    logger.info('Initializing email system...');
+    
+    // Initialize email templates
+    const { emailTemplateManager } = await import('./email/templates');
+    await emailTemplateManager.createDefaultTemplates();
+    
+    // Start email processor
+    const { emailProcessor } = await import('./email/processor');
+    emailProcessor.start();
+    
+    // Register graceful shutdown for email processor
+    const gracefulShutdown = () => {
+      logger.info('Shutting down email processor...');
+      emailProcessor.stop();
+      process.exit(0);
+    };
+    
+    process.on('SIGTERM', gracefulShutdown);
+    process.on('SIGINT', gracefulShutdown);
+    
+    logger.info('Email system initialized successfully');
+  } catch (error) {
+    logger.error('Failed to initialize email system', error as Error);
+    // Continue without email system - application can still function
+  }
+  
   const server = await registerRoutes(app);
 
   // Error handling middleware (must be last)
