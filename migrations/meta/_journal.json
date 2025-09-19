@@ -8,6 +8,13 @@
       "when": 1758254353847,
       "tag": "0000_opposite_micromacro",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1758254884201,
+      "tag": "0001_equal_wendigo",
+      "breakpoints": true
     }
   ]
 }
