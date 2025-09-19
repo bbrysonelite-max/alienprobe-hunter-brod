@@ -1,7 +1,11 @@
+import { config as dotenvConfig } from "dotenv";
+// Load environment variables first
+dotenvConfig();
+
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
-import { config, isProduction, getAllowedOrigins, isCorsCredentialsAllowed, validateDatabaseConnection, logConfiguration } from "./config";
+import { config as appConfig, isProduction, getAllowedOrigins, isCorsCredentialsAllowed, validateDatabaseConnection, logConfiguration } from "./config";
 import { logger, requestLoggingMiddleware, errorLoggingMiddleware, logApplicationStart, logApplicationReady } from "./logger";
 import { dbInitializer } from "./database/init";
 import compression from "compression";
@@ -11,7 +15,7 @@ import fs from "fs";
 const app = express();
 
 // Enable compression in production
-if (config.ENABLE_COMPRESSION) {
+if (appConfig.ENABLE_COMPRESSION) {
   app.use(compression());
 }
 
@@ -109,12 +113,12 @@ const distPath = path.resolve(import.meta.dirname, "dist");
 
   // Serve the React build files if available, otherwise fallback to Vite
   if (fs.existsSync(distPath)) {
-    log(`Serving ${config.APP_NAME} React build from dist folder`);
+    log(`Serving ${appConfig.APP_NAME} React build from dist folder`);
     
     // Add caching headers for static assets in production
     if (isProduction()) {
       app.use(express.static(distPath, {
-        maxAge: config.CACHE_TTL * 1000, // Convert to milliseconds
+        maxAge: appConfig.CACHE_TTL * 1000, // Convert to milliseconds
         etag: true,
         lastModified: true,
       }));
@@ -139,12 +143,12 @@ const distPath = path.resolve(import.meta.dirname, "dist");
   }
 
   server.listen({
-    port: config.PORT,
-    host: config.HOST,
+    port: appConfig.PORT,
+    host: appConfig.HOST,
     reusePort: true,
   }, () => {
-    log(`🚀 ${config.APP_NAME} v${config.APP_VERSION} running on ${config.HOST}:${config.PORT}`);
-    log(`📦 Environment: ${config.NODE_ENV}`);
+    log(`🚀 ${appConfig.APP_NAME} v${appConfig.APP_VERSION} running on ${appConfig.HOST}:${appConfig.PORT}`);
+    log(`📦 Environment: ${appConfig.NODE_ENV}`);
     log(`💾 Database: Connected`);
     logApplicationReady();
   });
