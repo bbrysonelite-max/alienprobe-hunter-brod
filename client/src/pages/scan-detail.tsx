@@ -427,7 +427,7 @@ export default function ScanDetail() {
                         ) : (
                           <>
                             <CreditCard className="w-4 h-4 mr-2" />
-                            Buy Full Scan Report - ${(paymentConfig?.defaultAmount || 4900) / 100}
+                            Upgrade to Alien Probe Pro - ${(paymentConfig?.defaultAmount || 4900) / 100}
                           </>
                         )}
                       </Button>
@@ -439,7 +439,7 @@ export default function ScanDetail() {
                         data-testid="button-buy-full-scan-link"
                       >
                         <CreditCard className="w-4 h-4 mr-2" />
-                        Buy Full Scan Report - ${(paymentConfig?.defaultAmount || 4900) / 100}
+                        Upgrade to Alien Probe Pro - ${(paymentConfig?.defaultAmount || 4900) / 100}
                       </Button>
                     ) : !paymentsEnabled ? (
                       <Alert className="max-w-md mx-auto">

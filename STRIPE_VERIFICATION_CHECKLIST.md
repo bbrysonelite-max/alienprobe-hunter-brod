@@ -1,5 +1,5 @@
 # Stripe Integration Verification Checklist
-## Production Readiness for botcraftwrks.ai
+## Production Readiness for Alienprobo.ai
 
 ---
 

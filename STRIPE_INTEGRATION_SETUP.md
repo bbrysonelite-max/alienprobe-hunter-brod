@@ -1,5 +1,5 @@
 # Stripe Payment Integration Setup Guide
-## For botcraftwrks.ai Merchant Account
+## For Alienprobo.ai Merchant Account
 
 **Status:** ✅ **INTEGRATION COMPLETE** - Ready for activation with your existing Stripe account
 
@@ -7,7 +7,7 @@
 
 ## 🚀 Overview
 
-Your Stripe payment integration is fully implemented and production-ready. This guide will help you connect your existing botcraftwrks.ai Stripe merchant account to activate payments.
+Your Stripe payment integration is fully implemented and production-ready. This guide will help you connect your existing Alienprobo.ai Stripe merchant account to activate payments.
 
 ### What's Already Implemented
 
@@ -48,7 +48,7 @@ npm run db:push
 
 ### Step 2: Stripe Account Configuration
 
-From your [Stripe Dashboard](https://dashboard.stripe.com/) for botcraftwrks.ai:
+From your [Stripe Dashboard](https://dashboard.stripe.com/) for Alienprobo.ai:
 
 #### 2.1 Get API Keys
 1. Go to **Developers** → **API keys**

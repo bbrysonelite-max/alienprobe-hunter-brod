@@ -2,7 +2,7 @@
 
 This is the "Alien Probe Business Scanner" - a production-ready, full-stack web application that provides business analysis and scanning capabilities. The application allows users to input business information (name and optional website) and generates scan results with insights about the business. It features a modern React frontend with a Node.js/Express backend and comprehensive PostgreSQL integration via Drizzle ORM.
 
-The project includes a complete business scanning workflow with real-time status updates, a results dashboard, sleek space-themed UI design, and enterprise-grade infrastructure including monitoring, logging, database migrations, and health checks. The application simulates business analysis by generating mock insights and scores.
+The project includes a complete business scanning workflow with real-time status updates, a results dashboard, sleek space-themed UI design, and enterprise-grade infrastructure including monitoring, logging, database migrations, and health checks. The application offers Alienprobo.ai products including basic scans, pro analysis, and premium subscriptions.
 
 **Production Status**: ✅ Fully deployed and operational as of September 19, 2025
 

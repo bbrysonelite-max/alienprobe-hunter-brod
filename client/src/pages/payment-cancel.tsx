@@ -116,7 +116,7 @@ export default function PaymentCancel() {
             <div className="bg-muted/30 rounded-lg p-4">
               <h4 className="font-medium mb-2">Still Want Full Access?</h4>
               <p className="text-sm text-muted-foreground mb-3">
-                You can always upgrade to unlock the complete business analysis with detailed insights, 
+                You can always upgrade to Alien Probe Pro to unlock the complete business analysis with detailed insights, 
                 competitive analysis, and actionable recommendations.
               </p>
               <ul className="text-xs text-muted-foreground space-y-1">
