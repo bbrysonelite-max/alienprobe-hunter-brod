@@ -93,6 +93,17 @@ export const payments = pgTable("payments", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const chatMessages = pgTable("chat_messages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  conversationId: varchar("conversation_id").notNull(), // links messages together
+  scanId: varchar("scan_id").references(() => scanResults.id), // optional: link to specific scan
+  leadId: varchar("lead_id").references(() => leads.id), // optional: link to specific lead
+  role: text("role").notNull(), // user/assistant/system
+  content: text("content").notNull(),
+  metadata: json("metadata"), // store context, tokens used, etc.
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -180,6 +191,18 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
   stripePaymentIntentId: z.string().optional(),
 });
 
+export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  conversationId: z.string().min(1, "Conversation ID is required"),
+  scanId: z.string().optional(),
+  leadId: z.string().optional(),
+  role: z.enum(["user", "assistant", "system"]),
+  content: z.string().min(1, "Content is required"),
+  metadata: z.any().optional(),
+});
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type InsertScanResult = z.infer<typeof insertScanResultSchema>;
@@ -196,3 +219,5 @@ export type InsertEmailLog = z.infer<typeof insertEmailLogSchema>;
 export type EmailLog = typeof emailLog.$inferSelect;
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
+export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
+export type ChatMessage = typeof chatMessages.$inferSelect;
