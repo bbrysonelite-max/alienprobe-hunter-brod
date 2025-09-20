@@ -19,6 +19,91 @@ export interface WorkflowContextData {
   leadId?: string;
   scanId?: string;
   workflowId?: string;
+  // Website metadata properties
+  websiteContent?: string;
+  websiteMetadata?: {
+    title?: string;
+    description?: string;
+    finalUrl?: string;
+    statusCode?: number;
+    contentType?: string;
+    contentLength?: number;
+    hasHttps?: boolean;
+    technologies?: Record<string, boolean>;
+    headers?: Record<string, string>;
+    [key: string]: unknown;
+  };
+  // Email and contact properties
+  foundEmails?: string[];
+  suggestedEmails?: string[];
+  recommendedEmail?: string;
+  // SEO analysis properties
+  seoAnalysis?: {
+    score?: number;
+    issues?: string[];
+    recommendations?: string[];
+    technicalSeo?: Record<string, unknown>;
+    contentSeo?: Record<string, unknown>;
+    summary?: string;
+    overallScore?: number;
+    strengths?: string[];
+    weaknesses?: string[];
+    [key: string]: unknown;
+  };
+  // Email validation and enrichment results
+  emailValidation?: {
+    summary?: {
+      totalEmails?: number;
+      validEmails?: number;
+      businessEmails?: number;
+      personalEmails?: number;
+      disposableEmails?: number;
+      flaggedEmails?: number;
+    };
+    recommendedEmail?: string;
+    results?: any[];
+    [key: string]: unknown;
+  };
+  emailEnrichment?: {
+    foundEmails?: string[];
+    suggestedEmails?: string[];
+    extractedFromContent?: string[];
+    domain?: string;
+    businessName?: string;
+    [key: string]: unknown;
+  };
+  // Business scoring results
+  businessScoring?: {
+    seoScore?: number;
+    emailScore?: number;
+    websiteScore?: number;
+    technicalScore?: number;
+    overallScore?: number;
+    maxPossibleScore?: number;
+    factors?: Record<string, any>;
+    recommendations?: string[];
+    strengths?: string[];
+    weaknesses?: string[];
+    scoringDate?: string;
+    [key: string]: unknown;
+  };
+  // Tool execution properties
+  tools?: Record<string, unknown>;
+  // Workflow definition for tool execution
+  workflowDefinition?: {
+    tools?: {
+      templates?: any[];
+    };
+    [key: string]: unknown;
+  };
+  // Final scan results and workflow status
+  finalScanResults?: any;
+  scanStatus?: string;
+  completedAt?: string;
+  reportSent?: boolean;
+  reportDeliveryResults?: any;
+  lastNoopStep?: any;
+  websiteUrl?: string;
   // Allow additional properties while maintaining type safety
   [key: string]: unknown;
 }
@@ -108,11 +193,11 @@ export interface WorkflowStepConfig {
 /**
  * Definition of a step type in the registry
  */
-export interface StepDefinition<TConfig = StepConfig> {
+export interface StepDefinition<TSchema extends z.ZodType = z.ZodType> {
   /** Zod schema for validating step configuration */
-  configSchema: z.ZodSchema<TConfig>;
+  configSchema: TSchema;
   /** Function to execute the step */
-  run: (context: StepContext, config: TConfig) => Promise<StepResult>;
+  run: (context: StepContext, config: z.output<TSchema>) => Promise<StepResult>;
   /** Optional step type description */
   description?: string;
 }
@@ -121,6 +206,22 @@ export interface StepDefinition<TConfig = StepConfig> {
  * Type-safe step registry mapping step types to their definitions
  */
 export type StepRegistry = Record<string, StepDefinition>;
+
+/**
+ * Index signature interface for step registry to enable dynamic lookups
+ */
+export interface IStepRegistry {
+  [key: string]: StepDefinition;
+  fetchWebsite: StepDefinition;
+  seoScan: StepDefinition;
+  emailEnrichment: StepDefinition;
+  validateEmailDomain: StepDefinition;
+  businessScoring: StepDefinition;
+  finalizeScan: StepDefinition;
+  toolCall: StepDefinition;
+  noop: StepDefinition;
+  sendScanReport: StepDefinition;
+}
 
 /**
  * Helper function to safely handle async operations with error logging
@@ -931,17 +1032,17 @@ async function scoreBusinessStep(context: StepContext, config: z.infer<typeof sc
       const summary = emailValidation.summary;
       
       // Score based on business email availability and quality
-      if (summary.businessEmails > 0) emailScore += 40;
-      if (summary.flaggedEmails === 0) emailScore += 30;
-      if (emailEnrichment.foundEmails?.length > 0) emailScore += 20;
-      if (summary.validEmails > 1) emailScore += 10;
+      if (summary?.businessEmails && summary.businessEmails > 0) emailScore += 40;
+      if (summary?.flaggedEmails === 0) emailScore += 30;
+      if (emailEnrichment.foundEmails?.length && emailEnrichment.foundEmails.length > 0) emailScore += 20;
+      if (summary?.validEmails && summary.validEmails > 1) emailScore += 10;
 
       scoring.emailScore = Math.min(emailScore, 100);
       scoring.factors.email = {
         score: scoring.emailScore,
-        totalEmails: summary.totalEmails,
-        businessEmails: summary.businessEmails,
-        flaggedEmails: summary.flaggedEmails,
+        totalEmails: summary?.totalEmails || 0,
+        businessEmails: summary?.businessEmails || 0,
+        flaggedEmails: summary?.flaggedEmails || 0,
         foundEmails: emailEnrichment.foundEmails?.length || 0
       };
 
@@ -1462,115 +1563,122 @@ async function sendScanReportStep(context: StepContext, config: z.infer<typeof s
       errors: [] as string[]
     };
 
-    // Execute email sending and Google Drive archiving concurrently
-    const promises = [];
-
-    // Promise 1: Send email to client
-    const emailPromise = (async () => {
+    // Execute Google Drive upload first (if archiving enabled) to get shareable URLs
+    let driveUploadResult = null;
+    if (config.includeArchiving) {
       try {
-        // Get email template
-        const template = await emailTemplateManager.getTemplate(config.emailTemplate);
-        if (!template) {
-          throw new Error(`Email template not found: ${config.emailTemplate}`);
-        }
-
-        // Prepare template variables
-        const emailVariables = reportGenerator.generateEmailVariables(
-          scanResult, 
-          generatedReport,
-          `#report-${config.scanId}`, // Report view URL placeholder
-          `#download-${config.scanId}` // Download URL placeholder
+        // Execute Google Drive upload using the tool
+        const driveResult = await executeTool(
+          'googleDriveUpload',
+          {
+            fileName: generatedReport.fileName,
+            content: generatedReport.htmlContent,
+            mimeType: generatedReport.mimeType,
+            folderId: config.googleDriveFolderId,
+            description: `Business analysis report for ${scanResult.businessName} - Generated on ${new Date().toLocaleDateString()}`
+          },
+          context
         );
 
-        // Add any additional lead-specific variables
-        if (lead) {
-          emailVariables.contactName = lead.contactName || emailVariables.businessName;
-          emailVariables.leadName = lead.contactName || emailVariables.businessName;
-        }
-
-        // Render email template
-        const { subject, body } = emailTemplateManager.renderTemplate(template, emailVariables);
-
-        // Send email
-        const emailResult = await emailMailer.sendEmail({
-          to: config.recipientEmail,
-          from: emailMailer.getFromAddress(),
-          subject,
-          text: body.replace(/<[^>]*>/g, ''), // Strip HTML for text version
-          html: body
-        });
-
-        if (emailResult.success) {
-          results.emailSent = true;
-          context.logger?.info(`Email sent successfully`, { 
+        if (driveResult.success) {
+          driveUploadResult = driveResult.data;
+          results.driveUploaded = true;
+          results.driveFileId = driveResult.data?.fileId;
+          results.driveUrl = driveResult.data?.webViewLink;
+          
+          context.logger?.info(`Google Drive upload successful`, { 
             runId: context.runId,
-            messageId: emailResult.messageId,
-            recipient: config.recipientEmail
+            fileId: results.driveFileId,
+            fileName: generatedReport.fileName,
+            webViewLink: driveResult.data?.webViewLink,
+            downloadUrl: driveResult.data?.downloadUrl
           });
         } else {
-          throw new Error(emailResult.error || 'Email sending failed');
+          throw new Error(driveResult.error || 'Drive upload failed');
         }
 
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Email sending failed';
-        results.errors.push(`Email error: ${errorMessage}`);
-        context.logger?.error(`Email sending failed`, { 
+        const errorMessage = error instanceof Error ? error.message : 'Google Drive upload failed';
+        results.errors.push(`Drive error: ${errorMessage}`);
+        context.logger?.error(`Google Drive upload failed`, { 
           runId: context.runId,
           error: errorMessage,
-          recipient: config.recipientEmail
+          fileName: generatedReport.fileName
         });
       }
-    });
-
-    promises.push(emailPromise());
-
-    // Promise 2: Upload to Google Drive (if archiving enabled)
-    if (config.includeArchiving) {
-      const drivePromise = (async () => {
-        try {
-          // Execute Google Drive upload using the tool
-          const driveResult = await executeTool(
-            'googleDriveUpload',
-            {
-              fileName: generatedReport.fileName,
-              content: generatedReport.htmlContent,
-              mimeType: generatedReport.mimeType,
-              folderId: config.googleDriveFolderId,
-              description: `Business analysis report for ${scanResult.businessName} - Generated on ${new Date().toLocaleDateString()}`
-            },
-            context
-          );
-
-          if (driveResult.success) {
-            results.driveUploaded = true;
-            results.driveFileId = driveResult.data?.fileId;
-            results.driveUrl = driveResult.data?.webViewLink;
-            
-            context.logger?.info(`Google Drive upload successful`, { 
-              runId: context.runId,
-              fileId: results.driveFileId,
-              fileName: generatedReport.fileName
-            });
-          } else {
-            throw new Error(driveResult.error || 'Drive upload failed');
-          }
-
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Google Drive upload failed';
-          results.errors.push(`Drive error: ${errorMessage}`);
-          context.logger?.error(`Google Drive upload failed`, { 
-            runId: context.runId,
-            error: errorMessage,
-            fileName: generatedReport.fileName
-          });
-        }
-      });
-
-      promises.push(drivePromise());
     }
 
-    // Wait for both operations to complete
-    await Promise.all(promises);
+    // Now send email with actual Drive URLs (or fallback URLs)
+    try {
+      // Get email template
+      const template = await emailTemplateManager.getTemplate(config.emailTemplate);
+      if (!template) {
+        throw new Error(`Email template not found: ${config.emailTemplate}`);
+      }
+
+      // Prepare template variables with actual Google Drive URLs
+      const reportUrl = driveUploadResult?.webViewLink || `${process.env.BASE_URL || 'https://yourapp.com'}/reports/${config.scanId}`;
+      const downloadUrl = driveUploadResult?.downloadUrl || driveUploadResult?.webContentLink || `${process.env.BASE_URL || 'https://yourapp.com'}/reports/${config.scanId}/download`;
+      
+      const emailVariables = reportGenerator.generateEmailVariables(
+        scanResult, 
+        generatedReport,
+        reportUrl,
+        downloadUrl
+      );
+
+      // Add any additional lead-specific variables
+      if (lead) {
+        emailVariables.contactName = lead.contactName || emailVariables.businessName;
+        emailVariables.leadName = lead.contactName || emailVariables.businessName;
+      }
+
+      // Render email template
+      const { subject, body } = emailTemplateManager.renderTemplate(template, emailVariables);
+
+      // Prepare email attachments - include HTML report as fallback if Drive upload failed
+      const attachments = [];
+      if (!results.driveUploaded) {
+        attachments.push({
+          filename: generatedReport.fileName,
+          content: generatedReport.htmlContent,
+          contentType: generatedReport.mimeType,
+        });
+      }
+
+      // Send email
+      const emailResult = await emailMailer.sendEmail({
+        to: config.recipientEmail,
+        from: emailMailer.getFromAddress(),
+        subject,
+        text: body.replace(/<[^>]*>/g, ''), // Strip HTML for text version
+        html: body,
+        attachments: attachments.length > 0 ? attachments : undefined
+      });
+
+      if (emailResult.success) {
+        results.emailSent = true;
+        context.logger?.info(`Email sent successfully`, { 
+          runId: context.runId,
+          messageId: emailResult.messageId,
+          recipient: config.recipientEmail,
+          reportUrl,
+          downloadUrl,
+          hasAttachment: attachments.length > 0
+        });
+      } else {
+        throw new Error(emailResult.error || 'Email sending failed');
+      }
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Email sending failed';
+      results.errors.push(`Email error: ${errorMessage}`);
+      context.logger?.error(`Email sending failed`, { 
+        runId: context.runId,
+        error: errorMessage,
+        recipient: config.recipientEmail
+      });
+    }
 
     // Determine overall success
     const overallSuccess = results.emailSent && (!config.includeArchiving || results.driveUploaded);
@@ -1617,7 +1725,7 @@ async function sendScanReportStep(context: StepContext, config: z.infer<typeof s
  * Main step registry containing all available step types
  * Maps step type strings to their definitions (schema + run function)
  */
-export const stepRegistry: StepRegistry = {
+export const stepRegistry: IStepRegistry = {
   fetchWebsite: {
     configSchema: fetchWebsiteSchema,
     run: fetchWebsiteStep,
@@ -1642,7 +1750,7 @@ export const stepRegistry: StepRegistry = {
     description: 'Validate and classify email domains using domain filters'
   },
 
-  scoreBusiness: {
+  businessScoring: {
     configSchema: scoreBusinessSchema,
     run: scoreBusinessStep,
     description: 'Calculate comprehensive business score based on all collected data'

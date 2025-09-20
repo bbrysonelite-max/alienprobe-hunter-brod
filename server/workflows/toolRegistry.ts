@@ -22,11 +22,11 @@ import type { ToolTemplate } from "@shared/schema";
 /**
  * Tool definition interface
  */
-export interface ToolDefinition<TConfig = any> {
+export interface ToolDefinition<TSchema extends z.ZodType = z.ZodType> {
   /** Zod schema for validating tool configuration */
-  configSchema: z.ZodSchema<TConfig>;
+  configSchema: TSchema;
   /** Function to execute the tool */
-  run: (context: StepContext, config: TConfig) => Promise<ToolResult>;
+  run: (context: StepContext, config: z.output<TSchema>) => Promise<ToolResult>;
   /** Tool description */
   description?: string;
 }
@@ -48,6 +48,12 @@ export interface ToolResult {
     headers?: Record<string, string>;
     url?: string;
     method?: string;
+    provider?: string;
+    messageId?: string;
+    tokensUsed?: number;
+    model?: string;
+    folderId?: string;
+    apiVersion?: string;
   };
 }
 
@@ -191,14 +197,18 @@ async function secureHttpRequest(config: HttpRequestConfig, allowedDomains?: str
 
     // Check domain allowlist if provided
     if (allowedDomains && allowedDomains.length > 0 && urlValidation.hostname) {
-      const isAllowed = allowedDomains.some(domain => 
+      // Add default allowed domains for Google APIs
+      const defaultAllowedDomains = ['googleapis.com', 'oauth2.googleapis.com'];
+      const combinedAllowedDomains = [...allowedDomains, ...defaultAllowedDomains];
+      
+      const isAllowed = combinedAllowedDomains.some(domain => 
         urlValidation.hostname === domain || 
         urlValidation.hostname!.endsWith(`.${domain}`)
       );
       if (!isAllowed) {
         return {
           success: false,
-          error: `Domain ${urlValidation.hostname} not in allowlist: ${allowedDomains.join(', ')}`,
+          error: `Domain ${urlValidation.hostname} not in allowlist: ${combinedAllowedDomains.join(', ')}`,
         };
       }
     }
@@ -222,8 +232,9 @@ async function secureHttpRequest(config: HttpRequestConfig, allowedDomains?: str
       }
     }
 
-    let response: Response;
+    let response: Response | null = null;
     let retryCount = 0;
+    let lastError: Error | null = null;
 
     // Retry logic
     while (retryCount <= config.retries) {
@@ -231,13 +242,19 @@ async function secureHttpRequest(config: HttpRequestConfig, allowedDomains?: str
         response = await fetch(config.url, fetchOptions);
         break;
       } catch (error) {
+        lastError = error instanceof Error ? error : new Error('Unknown fetch error');
         retryCount++;
         if (retryCount > config.retries) {
-          throw error;
+          throw lastError;
         }
         // Wait before retry (exponential backoff)
         await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
       }
+    }
+
+    // Ensure response was successfully fetched
+    if (!response) {
+      throw lastError || new Error('Failed to fetch response after retries');
     }
 
     // Check response size
@@ -307,7 +324,7 @@ async function secureHttpRequest(config: HttpRequestConfig, allowedDomains?: str
 /**
  * HTTP Request Tool
  */
-const httpRequestTool: ToolDefinition<HttpRequestConfig> = {
+const httpRequestTool: ToolDefinition<typeof httpRequestConfigSchema> = {
   configSchema: httpRequestConfigSchema,
   description: "Make HTTP requests to external APIs with security validation",
   
@@ -336,7 +353,7 @@ const httpRequestTool: ToolDefinition<HttpRequestConfig> = {
 /**
  * Webhook Tool
  */
-const webhookTool: ToolDefinition<WebhookConfig> = {
+const webhookTool: ToolDefinition<typeof webhookConfigSchema> = {
   configSchema: webhookConfigSchema,
   description: "Send POST requests to webhook endpoints",
   
@@ -377,7 +394,7 @@ const webhookTool: ToolDefinition<WebhookConfig> = {
 /**
  * Email Send Tool
  */
-const emailSendTool: ToolDefinition<EmailSendConfig> = {
+const emailSendTool: ToolDefinition<typeof emailSendConfigSchema> = {
   configSchema: emailSendConfigSchema,
   description: "Send emails using the configured email provider",
   
@@ -444,7 +461,7 @@ const emailSendTool: ToolDefinition<EmailSendConfig> = {
 /**
  * AI Generate Tool
  */
-const aiGenerateTool: ToolDefinition<AiGenerateConfig> = {
+const aiGenerateTool: ToolDefinition<typeof aiGenerateConfigSchema> = {
   configSchema: aiGenerateConfigSchema,
   description: "Generate content using OpenAI",
   
@@ -546,9 +563,108 @@ const aiGenerateTool: ToolDefinition<AiGenerateConfig> = {
 };
 
 /**
+ * Generate JWT token for Google Drive service account authentication
+ */
+function generateJWTToken(): string | null {
+  try {
+    const serviceAccountJson = process.env.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON;
+    if (!serviceAccountJson) {
+      return null;
+    }
+
+    const serviceAccount = JSON.parse(serviceAccountJson);
+    const privateKey = serviceAccount.private_key;
+    const clientEmail = serviceAccount.client_email;
+    
+    if (!privateKey || !clientEmail) {
+      throw new Error('Invalid service account JSON: missing private_key or client_email');
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      iss: clientEmail,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      aud: 'https://oauth2.googleapis.com/token',
+      exp: now + 3600, // 1 hour
+      iat: now,
+    };
+
+    // Simple JWT implementation using crypto module
+    const crypto = require('crypto');
+    const header = { alg: 'RS256', typ: 'JWT' };
+    
+    const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
+    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    
+    const signatureInput = `${encodedHeader}.${encodedPayload}`;
+    const signature = crypto.sign('RSA-SHA256', Buffer.from(signatureInput), privateKey);
+    const encodedSignature = signature.toString('base64url');
+    
+    return `${signatureInput}.${encodedSignature}`;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Get OAuth access token for Google Drive API
+ */
+async function getGoogleDriveAccessToken(): Promise<string | null> {
+  try {
+    const jwt = generateJWTToken();
+    if (!jwt) {
+      return null;
+    }
+
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt,
+      }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const tokenData = await response.json();
+    return tokenData.access_token;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Set Google Drive file permissions to allow anyone with link to view
+ */
+async function setGoogleDriveFilePermissions(fileId: string, accessToken: string): Promise<boolean> {
+  try {
+    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        role: 'reader',
+        type: 'anyone',
+      }),
+    });
+
+    return response.ok;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
  * Google Drive Upload Tool
  */
-const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
+const googleDriveUploadTool: ToolDefinition<typeof googleDriveUploadConfigSchema> = {
   configSchema: googleDriveUploadConfigSchema,
   description: "Upload files to Google Drive with security validation",
   
@@ -564,10 +680,10 @@ const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
     const startTime = Date.now();
 
     try {
-      // Check if API key is configured
-      const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
-      if (!apiKey) {
-        context.logger.warn("Google Drive API key not configured - using mock upload", {
+      // Get access token using service account JWT
+      const accessToken = await getGoogleDriveAccessToken();
+      if (!accessToken) {
+        context.logger.warn("Google Drive service account not configured - using mock upload", {
           runId: context.runId,
         });
         
@@ -580,6 +696,7 @@ const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
             mimeType: config.mimeType,
             size: config.content.length,
             webViewLink: `https://drive.google.com/file/d/${mockFileId}/view`,
+            webContentLink: `https://drive.google.com/uc?id=${mockFileId}`,
             downloadUrl: `https://drive.google.com/uc?id=${mockFileId}`,
           },
           metadata: {
@@ -622,14 +739,14 @@ const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
         `--${boundary}--`
       ].join('\r\n');
 
-      // Make Google Drive API call
+      // Make Google Drive API call with proper OAuth token
       const uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
       const response = await fetch(uploadUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'Authorization': `Bearer ${accessToken}`,
           'Content-Type': `multipart/related; boundary=${boundary}`,
-          'Content-Length': multipartBody.length.toString(),
+          'Content-Length': String(multipartBody.length),
         },
         body: multipartBody,
       });
@@ -638,7 +755,7 @@ const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
         const errorText = await response.text();
         context.logger.error("Google Drive upload failed", {
           runId: context.runId,
-          status: response.status,
+          status: String(response.status),
           statusText: response.statusText,
           error: errorText,
         });
@@ -650,6 +767,16 @@ const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
       }
 
       const uploadResult = await response.json();
+      
+      // Set file permissions for public sharing
+      const permissionsSet = await setGoogleDriveFilePermissions(uploadResult.id, accessToken);
+      if (!permissionsSet) {
+        context.logger.warn("Failed to set file permissions for public sharing", {
+          runId: context.runId,
+          fileId: uploadResult.id,
+        });
+      }
+
       const duration = Date.now() - startTime;
 
       context.logger.info("Google Drive upload completed", {
@@ -659,6 +786,7 @@ const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
         fileName: uploadResult.name,
         size: config.content.length,
         duration,
+        permissionsSet,
       });
 
       return {
@@ -669,8 +797,10 @@ const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
           mimeType: uploadResult.mimeType || config.mimeType,
           size: config.content.length,
           webViewLink: `https://drive.google.com/file/d/${uploadResult.id}/view`,
+          webContentLink: `https://drive.google.com/uc?id=${uploadResult.id}`,
           downloadUrl: `https://drive.google.com/uc?id=${uploadResult.id}`,
           createdTime: uploadResult.createdTime,
+          permissionsSet,
         },
         metadata: {
           provider: 'google-drive',
@@ -708,7 +838,7 @@ const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
 /**
  * Global tool registry mapping tool types to their definitions
  */
-export const toolRegistry = new Map<string, ToolDefinition>([
+export const toolRegistry = new Map<string, ToolDefinition<any>>([
   ['httpRequest', httpRequestTool],
   ['webhook', webhookTool],
   ['emailSend', emailSendTool],
@@ -719,8 +849,8 @@ export const toolRegistry = new Map<string, ToolDefinition>([
 /**
  * Register a new tool type
  */
-export function registerTool<TConfig>(toolType: string, definition: ToolDefinition<TConfig>): void {
-  toolRegistry.set(toolType, definition);
+export function registerTool<TSchema extends z.ZodType>(toolType: string, definition: ToolDefinition<TSchema>): void {
+  toolRegistry.set(toolType, definition as ToolDefinition<any>);
   logger.info(`Registered tool type: ${toolType}`, { toolType, description: definition.description });
 }
 

@@ -16,6 +16,7 @@ export const scanResults = pgTable("scan_results", {
   email: text("email"),
   scanData: text("scan_data"),
   status: text("status").notNull().default("pending"),
+  leadId: varchar("lead_id").references(() => leads.id),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
