@@ -35,7 +35,7 @@ export const leads = pgTable("leads", {
   emailDomain: text("email_domain"),
   status: text("status").notNull().default("pending"), // pending/verified/flagged/converted/disqualified
   source: text("source").notNull().default("manual"), // manual, google_places, yelp, serp_api, etc.
-  discoveryResultId: varchar("discovery_result_id").references(() => discoveryResults.id), // link to discovery if auto-generated
+  discoveryResultId: varchar("discovery_result_id"), // link to discovery if auto-generated - reference added later
   isPersonalEmail: boolean("is_personal_email").default(false),
   isDisposable: boolean("is_disposable").default(false),
   recaptchaScore: real("recaptcha_score"),
@@ -139,7 +139,7 @@ export const discoveryJobs = pgTable("discovery_jobs", {
 
 export const discoveryResults = pgTable("discovery_results", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  jobId: varchar("job_id").notNull().references(() => discoveryJobs.id),
+  jobId: varchar("job_id").notNull(),
   sourceRef: text("source_ref").notNull(), // external ID from API
   rawData: jsonb("raw_data").notNull(), // full API response
   businessName: text("business_name").notNull(),
@@ -150,7 +150,7 @@ export const discoveryResults = pgTable("discovery_results", {
   rating: real("rating"),
   reviewCount: integer("review_count"),
   dedupKey: text("dedup_key").notNull(), // domain or normalized name for deduplication
-  leadId: varchar("lead_id").references(() => leads.id), // created lead if processed
+  leadId: varchar("lead_id"), // created lead if processed - reference added later
   processed: boolean("processed").default(false),
   discarded: boolean("discarded").default(false), // filtered out by ICP rules
   discardReason: text("discard_reason"),
@@ -208,13 +208,13 @@ export const workflows = pgTable("workflows", {
   name: text("name").notNull(),
   businessType: text("business_type"),
   isDefault: boolean("is_default").default(false),
-  activeVersionId: varchar("active_version_id").references(() => workflowVersions.id),
+  activeVersionId: varchar("active_version_id"), // reference added later
   createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const workflowVersions = pgTable("workflow_versions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  workflowId: varchar("workflow_id").notNull().references(() => workflows.id, { onDelete: 'cascade' }),
+  workflowId: varchar("workflow_id").notNull(),
   version: integer("version").notNull(),
   status: text("status").notNull().default("draft"), // draft/published
   definition: jsonb("definition").notNull(),
@@ -450,6 +450,68 @@ export type InsertWorkflowRun = z.infer<typeof insertWorkflowRunSchema>;
 export type WorkflowRun = typeof workflowRuns.$inferSelect;
 export type InsertWorkflowRunStep = z.infer<typeof insertWorkflowRunStepSchema>;
 export type WorkflowRunStep = typeof workflowRunSteps.$inferSelect;
+
+// ===== HUNT EXECUTION TRACKING =====
+
+export const huntRuns = pgTable("hunt_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").notNull(),
+  status: text("status").notNull().default("queued"), // queued/running/completed/failed
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+  businessesDiscovered: integer("businesses_discovered").default(0),
+  leadsCreated: integer("leads_created").default(0),
+  scansTriggered: integer("scans_triggered").default(0),
+  quotaUsed: integer("quota_used").default(0),
+  errorMessage: text("error_message"),
+  metadata: jsonb("metadata"), // search params, source quotas, etc.
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    statusIdx: index("hunt_runs_status_idx").on(table.status),
+    jobIdIdx: index("hunt_runs_job_id_idx").on(table.jobId),
+    createdAtIdx: index("hunt_runs_created_at_idx").on(table.createdAt),
+  };
+});
+
+export const pipelineRuns = pgTable("pipeline_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  leadId: varchar("lead_id").notNull(),
+  huntRunId: varchar("hunt_run_id"),
+  scanId: varchar("scan_id"),
+  workflowRunId: varchar("workflow_run_id"),
+  status: text("status").notNull().default("discovery"), // discovery/scanning/recommendations/completed/failed
+  currentStep: text("current_step"), // track which stage is executing
+  progress: integer("progress").default(0), // 0-100 completion percentage
+  startedAt: timestamp("started_at").defaultNow(),
+  finishedAt: timestamp("finished_at"),
+  toolsRecommended: integer("tools_recommended").default(0),
+  estimatedValue: integer("estimated_value").default(0), // in cents
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    statusIdx: index("pipeline_runs_status_idx").on(table.status),
+    leadIdIdx: index("pipeline_runs_lead_id_idx").on(table.leadId),
+    createdAtIdx: index("pipeline_runs_created_at_idx").on(table.createdAt),
+  };
+});
+
+// Insert schemas for hunt tracking
+export const insertHuntRunSchema = createInsertSchema(huntRuns).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertPipelineRunSchema = createInsertSchema(pipelineRuns).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertHuntRun = z.infer<typeof insertHuntRunSchema>;
+export type HuntRun = typeof huntRuns.$inferSelect;
+export type InsertPipelineRun = z.infer<typeof insertPipelineRunSchema>;
+export type PipelineRun = typeof pipelineRuns.$inferSelect;
 
 // ===== TOOL RECOMMENDATION TABLES (Hunter Brody Revenue Engine) =====
 

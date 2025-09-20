@@ -20,6 +20,8 @@ import {
   businessTools,
   toolCategories,
   toolRecommendations,
+  huntRuns,
+  pipelineRuns,
   type Workflow,
   type WorkflowVersion,
   type WorkflowRun,
@@ -91,7 +93,7 @@ interface AuthenticatedUser {
 
 // Role-based permissions mapping
 const ROLE_PERMISSIONS = {
-  admin: ['workflow:create', 'workflow:read', 'workflow:update', 'workflow:delete', 'system:monitor'],
+  admin: ['workflow:create', 'workflow:read', 'workflow:update', 'workflow:delete', 'system:monitor', 'workflow:execute'],
   operator: ['workflow:read', 'workflow:update', 'workflow:execute'],
   viewer: ['workflow:read']
 };
@@ -3099,6 +3101,272 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ===== PRODUCTION HUNT EXECUTION =====
+
+  // Start a persistent hunt run
+  app.post("/api/hunts/run", adminRateLimit, requireAuth(['workflow:execute']), async (req: Request, res: Response) => {
+    const requestId = res.locals.requestId;
+    try {
+      const { jobId, force = false } = req.body;
+      
+      if (!jobId) {
+        return res.status(400).json({ error: "Job ID is required" });
+      }
+
+      // Preflight validation: check if job exists
+      const allJobs = hunterScheduler.getAllJobs();
+      const jobExists = allJobs.some(j => j.id === jobId);
+      if (!jobExists) {
+        return res.status(404).json({ 
+          error: "Job not found", 
+          availableJobs: allJobs.map(j => j.id)
+        });
+      }
+
+      // Check if job is already running (unless forced)
+      if (!force) {
+        const [existingRun] = await db
+          .select()
+          .from(huntRuns)
+          .where(and(
+            eq(huntRuns.jobId, jobId),
+            eq(huntRuns.status, 'running')
+          ))
+          .limit(1);
+
+        if (existingRun) {
+          return res.status(409).json({ 
+            error: "Hunt already running", 
+            runId: existingRun.id 
+          });
+        }
+      }
+
+      // Create hunt run record
+      const [huntRun] = await db
+        .insert(huntRuns)
+        .values({
+          jobId,
+          status: 'queued',
+          metadata: {
+            requestId,
+            force,
+            initiatedBy: 'api'
+          }
+        })
+        .returning();
+
+      logger.info('🎯 Hunt run started', {
+        requestId,
+        huntRunId: huntRun.id,
+        jobId
+      });
+
+      // Execute hunt asynchronously
+      setImmediate(async () => {
+        await executeHuntRun(huntRun.id);
+      });
+
+      res.json({
+        success: true,
+        huntRunId: huntRun.id,
+        status: 'queued',
+        message: 'Hunt execution started'
+      });
+
+    } catch (error) {
+      logger.error('Failed to start hunt run', { requestId, error });
+      res.status(500).json({ error: 'Failed to start hunt run' });
+    }
+  });
+
+  // Get hunt run status
+  app.get("/api/hunts/status/:runId", requireAuth(['workflow:read']), async (req: Request, res: Response) => {
+    try {
+      const { runId } = req.params;
+      
+      const [huntRun] = await db
+        .select()
+        .from(huntRuns)
+        .where(eq(huntRuns.id, runId))
+        .limit(1);
+
+      if (!huntRun) {
+        return res.status(404).json({ error: "Hunt run not found" });
+      }
+
+      res.json({
+        success: true,
+        huntRun: {
+          id: huntRun.id,
+          jobId: huntRun.jobId,
+          status: huntRun.status,
+          progress: huntRun.status === 'completed' ? 100 : 
+                   huntRun.status === 'running' ? 50 : 0,
+          businessesDiscovered: huntRun.businessesDiscovered,
+          leadsCreated: huntRun.leadsCreated,
+          scansTriggered: huntRun.scansTriggered,
+          quotaUsed: huntRun.quotaUsed,
+          startedAt: huntRun.startedAt,
+          finishedAt: huntRun.finishedAt,
+          errorMessage: huntRun.errorMessage,
+          metadata: huntRun.metadata
+        }
+      });
+
+    } catch (error) {
+      logger.error('Failed to get hunt status', { error });
+      res.status(500).json({ error: 'Failed to get hunt status' });
+    }
+  });
+
+  // List hunt run history
+  app.get("/api/hunts/history", requireAuth(['workflow:read']), async (req: Request, res: Response) => {
+    try {
+      const { limit = 50, offset = 0, status, jobId } = req.query;
+      
+      let query = db.select().from(huntRuns);
+      
+      const conditions = [];
+      if (status) conditions.push(eq(huntRuns.status, status as string));
+      if (jobId) conditions.push(eq(huntRuns.jobId, jobId as string));
+      
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions));
+      }
+      
+      const runs = await query
+        .orderBy(desc(huntRuns.createdAt))
+        .limit(Number(limit))
+        .offset(Number(offset));
+
+      const total = await db
+        .select({ count: count() })
+        .from(huntRuns)
+        .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+      res.json({
+        success: true,
+        runs: runs.map(run => ({
+          id: run.id,
+          jobId: run.jobId,
+          status: run.status,
+          businessesDiscovered: run.businessesDiscovered,
+          leadsCreated: run.leadsCreated,
+          scansTriggered: run.scansTriggered,
+          quotaUsed: run.quotaUsed,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          duration: run.startedAt && run.finishedAt ? 
+            Math.round((run.finishedAt.getTime() - run.startedAt.getTime()) / 1000) : null,
+          createdAt: run.createdAt
+        })),
+        pagination: {
+          total: total[0]?.count || 0,
+          limit: Number(limit),
+          offset: Number(offset)
+        }
+      });
+
+    } catch (error) {
+      logger.error('Failed to get hunt history', { error });
+      res.status(500).json({ error: 'Failed to get hunt history' });
+    }
+  });
+
+  // Start complete pipeline run
+  app.post("/api/pipelines/run", adminRateLimit, requireAuth(['workflow:execute']), async (req: Request, res: Response) => {
+    const requestId = res.locals.requestId;
+    try {
+      const { leadId, businessName, industry, autoScan = true } = req.body;
+      
+      if (!leadId && !businessName) {
+        return res.status(400).json({ 
+          error: "Either leadId or businessName is required" 
+        });
+      }
+
+      // Create pipeline run record
+      const [pipelineRun] = await db
+        .insert(pipelineRuns)
+        .values({
+          leadId: leadId || `manual_${Date.now()}`,
+          status: 'discovery',
+          currentStep: 'initializing',
+          progress: 0
+        })
+        .returning();
+
+      logger.info('🔄 Pipeline run started', {
+        requestId,
+        pipelineRunId: pipelineRun.id,
+        leadId,
+        businessName
+      });
+
+      // Execute pipeline asynchronously
+      setImmediate(async () => {
+        await executePipelineRun(pipelineRun.id, {
+          leadId,
+          businessName,
+          industry,
+          autoScan
+        });
+      });
+
+      res.json({
+        success: true,
+        pipelineRunId: pipelineRun.id,
+        status: 'discovery',
+        message: 'Pipeline execution started'
+      });
+
+    } catch (error) {
+      logger.error('Failed to start pipeline run', { requestId, error });
+      res.status(500).json({ error: 'Failed to start pipeline run' });
+    }
+  });
+
+  // Get pipeline run status
+  app.get("/api/pipelines/status/:runId", requireAuth(['workflow:read']), async (req: Request, res: Response) => {
+    try {
+      const { runId } = req.params;
+      
+      const [pipelineRun] = await db
+        .select()
+        .from(pipelineRuns)
+        .where(eq(pipelineRuns.id, runId))
+        .limit(1);
+
+      if (!pipelineRun) {
+        return res.status(404).json({ error: "Pipeline run not found" });
+      }
+
+      res.json({
+        success: true,
+        pipelineRun: {
+          id: pipelineRun.id,
+          leadId: pipelineRun.leadId,
+          status: pipelineRun.status,
+          currentStep: pipelineRun.currentStep,
+          progress: pipelineRun.progress,
+          huntRunId: pipelineRun.huntRunId,
+          scanId: pipelineRun.scanId,
+          workflowRunId: pipelineRun.workflowRunId,
+          toolsRecommended: pipelineRun.toolsRecommended,
+          estimatedValue: pipelineRun.estimatedValue,
+          startedAt: pipelineRun.startedAt,
+          finishedAt: pipelineRun.finishedAt,
+          errorMessage: pipelineRun.errorMessage
+        }
+      });
+
+    } catch (error) {
+      logger.error('Failed to get pipeline status', { error });
+      res.status(500).json({ error: 'Failed to get pipeline status' });
+    }
+  });
+
   // DEMO: Complete AlienProbe.ai pipeline test (Lead → Scan → Recommendations)
   app.post("/api/demo/complete-pipeline", async (req: Request, res: Response) => {
     try {
@@ -3304,4 +3572,341 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   const httpServer = createServer(app);
   return httpServer;
+}
+
+// ===== HUNT EXECUTION FUNCTIONS =====
+
+async function executeHuntRun(huntRunId: string): Promise<void> {
+  try {
+    logger.info('🎯 Starting hunt execution', { huntRunId });
+
+    // Update status to running
+    await db
+      .update(huntRuns)
+      .set({ 
+        status: 'running', 
+        startedAt: new Date() 
+      })
+      .where(eq(huntRuns.id, huntRunId));
+
+    const [huntRun] = await db
+      .select()
+      .from(huntRuns)
+      .where(eq(huntRuns.id, huntRunId))
+      .limit(1);
+
+    if (!huntRun) {
+      throw new Error(`Hunt run ${huntRunId} not found`);
+    }
+
+    // Get job configuration from hunter scheduler
+    const allJobs = hunterScheduler.getAllJobs();
+    const job = allJobs.find(j => j.id === huntRun.jobId);
+    if (!job) {
+      throw new Error(`Job ${huntRun.jobId} not found in scheduler`);
+    }
+
+    // Execute discovery
+    const discoveryResult = await discoveryEngine.discoverBusinesses(
+      job.searchParams,
+      job.maxResultsPerRun
+    );
+
+    let leadsCreated = 0;
+    let scansTriggered = 0;
+
+    // Process discovered businesses
+    for (const business of discoveryResult.businesses) {
+      try {
+        // Create lead from discovered business
+        const [lead] = await db
+          .insert(leads)
+          .values({
+            businessName: business.businessName,
+            website: business.website,
+            industry: business.industry || job.searchParams.industry,
+            source: business.sourceName,
+            status: 'pending',
+            companySize: '1-10', // Assume small business
+            budgetRange: '5k-25k'
+          })
+          .returning();
+
+        leadsCreated++;
+
+        // Auto-trigger scan if lead looks promising
+        if (business.rating && business.rating >= 3.5 && business.website) {
+          const [scanResult] = await db
+            .insert(scanResults)
+            .values({
+              businessName: business.businessName,
+              website: business.website,
+              leadId: lead.id,
+              status: 'pending'
+            })
+            .returning();
+
+          scansTriggered++;
+
+          // Trigger async scan processing
+          setImmediate(async () => {
+            try {
+              await processScanResult(scanResult.id);
+            } catch (error) {
+              logger.error('Failed to process scan', { 
+                scanId: scanResult.id, 
+                error 
+              });
+            }
+          });
+        }
+
+      } catch (error) {
+        logger.warn('Failed to create lead for business', { 
+          businessName: business.businessName, 
+          error 
+        });
+      }
+    }
+
+    // Update hunt run with results
+    await db
+      .update(huntRuns)
+      .set({
+        status: 'completed',
+        finishedAt: new Date(),
+        businessesDiscovered: discoveryResult.businesses.length,
+        leadsCreated,
+        scansTriggered,
+        quotaUsed: discoveryResult.quotaUsed
+      })
+      .where(eq(huntRuns.id, huntRunId));
+
+    logger.info('✅ Hunt execution completed', {
+      huntRunId,
+      businessesFound: discoveryResult.businesses.length,
+      leadsCreated,
+      scansTriggered,
+      quotaUsed: discoveryResult.quotaUsed
+    });
+
+  } catch (error) {
+    logger.error('❌ Hunt execution failed', { huntRunId, error });
+    
+    await db
+      .update(huntRuns)
+      .set({
+        status: 'failed',
+        finishedAt: new Date(),
+        errorMessage: error instanceof Error ? error.message : 'Unknown error'
+      })
+      .where(eq(huntRuns.id, huntRunId));
+  }
+}
+
+async function executePipelineRun(
+  pipelineRunId: string, 
+  params: {
+    leadId?: string;
+    businessName?: string;
+    industry?: string;
+    autoScan?: boolean;
+  }
+): Promise<void> {
+  try {
+    logger.info('🔄 Starting pipeline execution', { pipelineRunId, params });
+
+    let leadId = params.leadId;
+    let scanId: string | null = null;
+    let toolsRecommended = 0;
+    let estimatedValue = 0;
+
+    // Step 1: Lead Discovery/Creation
+    await updatePipelineStatus(pipelineRunId, 'discovery', 'creating_lead', 10);
+
+    if (!leadId && params.businessName) {
+      // Create lead from business name
+      const [lead] = await db
+        .insert(leads)
+        .values({
+          businessName: params.businessName,
+          industry: params.industry,
+          source: 'manual_pipeline',
+          status: 'pending',
+          companySize: '1-10',
+          budgetRange: '5k-25k'
+        })
+        .returning();
+      
+      leadId = lead.id;
+    }
+
+    if (!leadId) {
+      throw new Error('Failed to get or create lead');
+    }
+
+    // Update pipeline with leadId
+    await db
+      .update(pipelineRuns)
+      .set({ leadId })
+      .where(eq(pipelineRuns.id, pipelineRunId));
+
+    // Step 2: Business Scanning
+    if (params.autoScan) {
+      await updatePipelineStatus(pipelineRunId, 'scanning', 'analyzing_business', 40);
+
+      const [lead] = await db
+        .select()
+        .from(leads)
+        .where(eq(leads.id, leadId))
+        .limit(1);
+
+      if (lead) {
+        const [scan] = await db
+          .insert(scanResults)
+          .values({
+            businessName: lead.businessName,
+            website: lead.website,
+            leadId: lead.id,
+            status: 'completed',
+            scanData: JSON.stringify({
+              overallScore: Math.floor(Math.random() * 40) + 60,
+              industry: lead.industry,
+              companySize: lead.companySize,
+              painPoints: ['Customer management', 'Digital presence', 'Operational efficiency'],
+              opportunities: ['Automation', 'Customer retention', 'Revenue optimization']
+            })
+          })
+          .returning();
+
+        scanId = scan.id;
+
+        // Update pipeline with scanId
+        await db
+          .update(pipelineRuns)
+          .set({ scanId })
+          .where(eq(pipelineRuns.id, pipelineRunId));
+      }
+    }
+
+    // Step 3: Tool Recommendations  
+    await updatePipelineStatus(pipelineRunId, 'recommendations', 'generating_recommendations', 70);
+
+    if (leadId) {
+      try {
+        const recommendations = await recommendationEngine.generateRecommendations(
+          leadId,
+          scanId || undefined,
+          'pipeline'
+        );
+
+        toolsRecommended = recommendations.length;
+        estimatedValue = Math.round(recommendations.reduce((total, rec) => {
+          const pricing = rec.tool.pricing;
+          const avgPrice = (pricing.minPrice + pricing.maxPrice) / 2;
+          return total + (avgPrice * 0.15); // 15% commission
+        }, 0) * 100); // Convert to cents
+
+      } catch (error) {
+        logger.warn('Failed to generate recommendations', { 
+          pipelineRunId, 
+          leadId, 
+          error 
+        });
+      }
+    }
+
+    // Step 4: Complete Pipeline
+    await updatePipelineStatus(pipelineRunId, 'completed', 'pipeline_complete', 100);
+
+    await db
+      .update(pipelineRuns)
+      .set({
+        status: 'completed',
+        finishedAt: new Date(),
+        toolsRecommended,
+        estimatedValue
+      })
+      .where(eq(pipelineRuns.id, pipelineRunId));
+
+    logger.info('✅ Pipeline execution completed', {
+      pipelineRunId,
+      leadId,
+      scanId,
+      toolsRecommended,
+      estimatedValue: estimatedValue / 100
+    });
+
+  } catch (error) {
+    logger.error('❌ Pipeline execution failed', { pipelineRunId, error });
+    
+    await db
+      .update(pipelineRuns)
+      .set({
+        status: 'failed',
+        finishedAt: new Date(),
+        errorMessage: error instanceof Error ? error.message : 'Unknown error'
+      })
+      .where(eq(pipelineRuns.id, pipelineRunId));
+  }
+}
+
+async function updatePipelineStatus(
+  pipelineRunId: string, 
+  status: string, 
+  currentStep: string, 
+  progress: number
+): Promise<void> {
+  await db
+    .update(pipelineRuns)
+    .set({
+      status,
+      currentStep,
+      progress
+    })
+    .where(eq(pipelineRuns.id, pipelineRunId));
+}
+
+async function processScanResult(scanId: string): Promise<void> {
+  try {
+    logger.info('🔍 Processing scan result', { scanId });
+
+    // Simulate scan processing
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Generate scan data
+    const scanData = {
+      overallScore: Math.floor(Math.random() * 40) + 60,
+      strengths: ['Strong local reputation', 'Experienced staff'],
+      weaknesses: ['Limited online presence', 'Manual processes'],
+      opportunities: ['Digital marketing', 'Customer management system'],
+      metrics: {
+        onlinePresence: Math.floor(Math.random() * 50) + 30,
+        customerSatisfaction: Math.floor(Math.random() * 30) + 70,
+        operationalEfficiency: Math.floor(Math.random() * 40) + 40
+      }
+    };
+
+    // Update scan with results
+    await db
+      .update(scanResults)
+      .set({
+        status: 'completed',
+        scanData: JSON.stringify(scanData)
+      })
+      .where(eq(scanResults.id, scanId));
+
+    logger.info('✅ Scan processing completed', { 
+      scanId, 
+      score: scanData.overallScore 
+    });
+
+  } catch (error) {
+    logger.error('❌ Scan processing failed', { scanId, error });
+    
+    await db
+      .update(scanResults)
+      .set({ status: 'failed' })
+      .where(eq(scanResults.id, scanId));
+  }
 }
