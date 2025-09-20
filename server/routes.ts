@@ -15,13 +15,14 @@ import {
   payments,
   scanResults,
   emailLog,
+  emailQueue,
   type Workflow,
   type WorkflowVersion,
   type WorkflowRun,
   type WorkflowRunStep
 } from "@shared/schema";
 import { z } from "zod";
-import { eq, desc, and, count, sql, asc, or, gte, lte } from "drizzle-orm";
+import { eq, desc, and, count, sql, asc, or, gte, lte, lt } from "drizzle-orm";
 import { healthCheck, livenessProbe, readinessProbe, metricsEndpoint, simulateError } from "./monitoring";
 import { logger } from "./logger";
 import crypto from "crypto";
@@ -36,7 +37,6 @@ const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const STRIPE_PAYMENT_LINK_URL = process.env.STRIPE_PAYMENT_LINK_URL;
 const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "4900"); // Default $49.00
-const DAILY_REVENUE_GOAL_CENTS = parseInt(process.env.DAILY_REVENUE_GOAL_CENTS || "50000"); // Default $500.00
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2025-08-27.basil", // Use latest API version
@@ -2638,15 +2638,130 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Daily revenue goal tracking endpoint
-  app.get("/api/analytics/daily", (req: Request, res: Response) => {
-    logger.info('Daily analytics endpoint hit');
-    res.json({
-      success: true,
-      data: {
-        status: "analytics endpoint working",
-        timestamp: new Date().toISOString()
-      }
-    });
+  app.get("/api/analytics/daily", async (req: Request, res: Response) => {
+    try {
+      logger.info('Daily analytics endpoint hit');
+      
+      // Get today's date range (start and end of day in UTC)
+      const now = new Date();
+      const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      const endOfDay = new Date(startOfDay);
+      endOfDay.setUTCDate(endOfDay.getUTCDate() + 1);
+      
+      // Get the current daily goal (runtime override or environment variable)
+      const dailyGoalCents = runtimeDailyGoalCents || parseInt(process.env.DAILY_REVENUE_GOAL_CENTS || "5000");
+      
+      // Query today's successful payments
+      const todaysPayments = await db
+        .select({
+          amount: payments.amount,
+          status: payments.status,
+          createdAt: payments.createdAt
+        })
+        .from(payments)
+        .where(
+          and(
+            gte(payments.createdAt, startOfDay),
+            lt(payments.createdAt, endOfDay),
+            or(
+              eq(payments.status, 'paid'),
+              eq(payments.status, 'succeeded')
+            )
+          )
+        );
+      
+      // Calculate today's revenue
+      const todaysRevenueCents = todaysPayments.reduce((sum, payment) => sum + payment.amount, 0);
+      
+      // Query today's scans
+      const todaysScans = await db
+        .select({
+          id: scanResults.id,
+          status: scanResults.status,
+          createdAt: scanResults.createdAt
+        })
+        .from(scanResults)
+        .where(
+          and(
+            gte(scanResults.createdAt, startOfDay),
+            lt(scanResults.createdAt, endOfDay)
+          )
+        );
+      
+      // Query today's emails from email log (authoritative source)
+      const todaysEmails = await db
+        .select({
+          id: emailLog.id,
+          status: emailLog.status,
+          sentAt: emailLog.sentAt
+        })
+        .from(emailLog)
+        .where(
+          and(
+            gte(emailLog.sentAt, startOfDay),
+            lt(emailLog.sentAt, endOfDay)
+          )
+        );
+      
+      // Calculate metrics
+      const goalProgress = dailyGoalCents > 0 ? (todaysRevenueCents / dailyGoalCents) * 100 : 0;
+      const scansCompleted = todaysScans.filter(scan => scan.status === 'completed').length;
+      const emailsSent = todaysEmails.filter(email => email.status === 'sent' || email.status === 'delivered').length;
+      const emailsPending = 0; // email_log only contains completed emails
+      const emailsFailed = todaysEmails.filter(email => email.status === 'failed' || email.status === 'bounced').length;
+      
+      // Calculate conversion rate (successful payments / completed scans)
+      const conversionRate = scansCompleted > 0 ? (todaysPayments.length / scansCompleted) * 100 : 0;
+      
+      const response = {
+        success: true,
+        data: {
+          date: startOfDay.toISOString().split('T')[0],
+          timestamp: new Date().toISOString(),
+          revenue: {
+            todayCents: todaysRevenueCents,
+            todayDollars: todaysRevenueCents / 100,
+            goalCents: dailyGoalCents,
+            goalDollars: dailyGoalCents / 100,
+            progressPercent: Math.round(goalProgress * 100) / 100,
+            remaining: Math.max(0, dailyGoalCents - todaysRevenueCents),
+            isGoalMet: todaysRevenueCents >= dailyGoalCents
+          },
+          scans: {
+            total: todaysScans.length,
+            completed: scansCompleted,
+            pending: todaysScans.filter(scan => scan.status === 'pending').length,
+            failed: todaysScans.filter(scan => scan.status === 'failed').length
+          },
+          emails: {
+            total: todaysEmails.length,
+            sent: emailsSent,
+            pending: emailsPending,
+            failed: emailsFailed
+          },
+          performance: {
+            conversionRate: Math.round(conversionRate * 100) / 100,
+            paymentsCount: todaysPayments.length,
+            averageOrderValue: todaysPayments.length > 0 ? 
+              Math.round((todaysRevenueCents / todaysPayments.length) / 100 * 100) / 100 : 0
+          }
+        }
+      };
+      
+      logger.info('Daily analytics computed', { 
+        revenue: response.data.revenue,
+        scans: response.data.scans.total,
+        emails: response.data.emails.total
+      });
+      
+      res.json(response);
+    } catch (error) {
+      logger.error('Failed to compute daily analytics', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to compute daily analytics"
+      });
+    }
   });
 
   // Health and monitoring endpoints
