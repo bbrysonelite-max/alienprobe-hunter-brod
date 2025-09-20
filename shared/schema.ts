@@ -451,6 +451,92 @@ export type WorkflowRun = typeof workflowRuns.$inferSelect;
 export type InsertWorkflowRunStep = z.infer<typeof insertWorkflowRunStepSchema>;
 export type WorkflowRunStep = typeof workflowRunSteps.$inferSelect;
 
+// ===== TOOL RECOMMENDATION TABLES (Hunter Brody Revenue Engine) =====
+
+export const toolCategories = pgTable("tool_categories", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description"),
+  icon: text("icon"), // icon name for UI
+  priority: integer("priority").default(0), // display order
+  enabled: boolean("enabled").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const businessTools = pgTable("business_tools", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  shortDescription: text("short_description"), // one-liner for cards
+  website: text("website").notNull(),
+  logo: text("logo"), // logo URL
+  categoryId: varchar("category_id").notNull().references(() => toolCategories.id),
+  pricing: jsonb("pricing").notNull(), // {plan: "free/paid", minPrice: 0, maxPrice: 299, currency: "USD"}
+  targetBusinessSize: text("target_business_size").array(), // ["1-10", "11-50", etc]
+  targetIndustries: text("target_industries").array(), // ["restaurant", "retail", etc]
+  features: text("features").array(), // ["CRM", "Analytics", "Automation"]
+  useCases: text("use_cases").array(), // ["Lead Management", "Customer Support"]
+  integrations: text("integrations").array(), // ["Slack", "Salesforce", "HubSpot"]
+  affiliateUrl: text("affiliate_url"), // our affiliate/referral link
+  commissionRate: real("commission_rate"), // percentage commission (0-100)
+  tags: text("tags").array(), // ["popular", "recommended", "new"]
+  rating: real("rating").default(0), // 0-5 star rating
+  reviewCount: integer("review_count").default(0),
+  priority: integer("priority").default(0), // recommendation priority within category
+  enabled: boolean("enabled").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    categoryIndex: index("business_tools_category_idx").on(table.categoryId),
+    enabledIndex: index("business_tools_enabled_idx").on(table.enabled),
+    priorityIndex: index("business_tools_priority_idx").on(table.priority),
+  };
+});
+
+export const toolRecommendations = pgTable("tool_recommendations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  leadId: varchar("lead_id").notNull().references(() => leads.id),
+  scanId: varchar("scan_id").references(() => scanResults.id),
+  toolId: varchar("tool_id").notNull().references(() => businessTools.id),
+  recommendationScore: real("recommendation_score").notNull(), // 0-100 match score
+  reasonsShown: text("reasons_shown").array(), // ["Industry match", "Size fit", "Feature need"]
+  matchingCriteria: jsonb("matching_criteria"), // detailed matching logic used
+  position: integer("position").notNull(), // display position in recommendations
+  context: text("context"), // where shown: "scan_results", "email", "dashboard"
+  status: text("status").notNull().default("generated"), // generated/shown/clicked/converted/dismissed
+  shownAt: timestamp("shown_at"),
+  clickedAt: timestamp("clicked_at"),
+  convertedAt: timestamp("converted_at"),
+  dismissedAt: timestamp("dismissed_at"),
+  dismissReason: text("dismiss_reason"), // "not_interested", "already_using", "too_expensive"
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    leadToolIndex: index("tool_recommendations_lead_tool_idx").on(table.leadId, table.toolId),
+    statusIndex: index("tool_recommendations_status_idx").on(table.status),
+    scoreIndex: index("tool_recommendations_score_idx").on(table.recommendationScore),
+    shownAtIndex: index("tool_recommendations_shown_at_idx").on(table.shownAt),
+  };
+});
+
+export const recommendationEvents = pgTable("recommendation_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  recommendationId: varchar("recommendation_id").notNull().references(() => toolRecommendations.id),
+  eventType: text("event_type").notNull(), // "view", "click", "signup", "trial", "purchase"
+  metadata: jsonb("metadata"), // additional event data
+  userAgent: text("user_agent"),
+  ipAddress: text("ip_address"),
+  referrer: text("referrer"),
+  revenue: integer("revenue"), // revenue in cents if applicable
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    recommendationIndex: index("recommendation_events_recommendation_idx").on(table.recommendationId),
+    eventTypeIndex: index("recommendation_events_event_type_idx").on(table.eventType),
+    createdAtIndex: index("recommendation_events_created_at_idx").on(table.createdAt),
+  };
+});
+
 // ============= PROSPECTING SCHEMAS & TYPES =============
 
 export const insertLeadSourceSchema = createInsertSchema(leadSources);
@@ -472,6 +558,81 @@ export type InsertSuppressionList = z.infer<typeof insertSuppressionListSchema>;
 export type SuppressionList = typeof suppressionList.$inferSelect;
 export type InsertIcpRule = z.infer<typeof insertIcpRuleSchema>;
 export type IcpRule = typeof icpRules.$inferSelect;
+
+// ============= TOOL RECOMMENDATION SCHEMAS & TYPES =============
+
+export const insertToolCategorySchema = createInsertSchema(toolCategories).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  name: z.string().min(1, "Category name is required"),
+  description: z.string().optional(),
+  icon: z.string().optional(),
+  priority: z.number().int().optional(),
+  enabled: z.boolean().optional(),
+});
+
+export const insertBusinessToolSchema = createInsertSchema(businessTools).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  name: z.string().min(1, "Tool name is required"),
+  description: z.string().min(1, "Description is required"),
+  shortDescription: z.string().optional(),
+  website: z.string().url("Valid URL required"),
+  logo: z.string().url("Valid logo URL").optional(),
+  categoryId: z.string().min(1, "Category ID is required"),
+  pricing: z.any(), // JSON pricing object
+  targetBusinessSize: z.array(z.string()).optional(),
+  targetIndustries: z.array(z.string()).optional(),
+  features: z.array(z.string()).optional(),
+  useCases: z.array(z.string()).optional(),
+  integrations: z.array(z.string()).optional(),
+  affiliateUrl: z.string().url("Valid affiliate URL").optional(),
+  commissionRate: z.number().min(0).max(100).optional(),
+  tags: z.array(z.string()).optional(),
+  rating: z.number().min(0).max(5).optional(),
+  reviewCount: z.number().int().min(0).optional(),
+  priority: z.number().int().optional(),
+  enabled: z.boolean().optional(),
+});
+
+export const insertToolRecommendationSchema = createInsertSchema(toolRecommendations).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  leadId: z.string().min(1, "Lead ID is required"),
+  scanId: z.string().optional(),
+  toolId: z.string().min(1, "Tool ID is required"),
+  recommendationScore: z.number().min(0).max(100),
+  reasonsShown: z.array(z.string()).optional(),
+  matchingCriteria: z.any().optional(),
+  position: z.number().int().min(1),
+  context: z.enum(["scan_results", "email", "dashboard", "api"]).optional(),
+  status: z.enum(["generated", "shown", "clicked", "converted", "dismissed"]).optional(),
+});
+
+export const insertRecommendationEventSchema = createInsertSchema(recommendationEvents).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  recommendationId: z.string().min(1, "Recommendation ID is required"),
+  eventType: z.enum(["view", "click", "signup", "trial", "purchase"]),
+  metadata: z.any().optional(),
+  userAgent: z.string().optional(),
+  ipAddress: z.string().optional(),
+  referrer: z.string().optional(),
+  revenue: z.number().int().min(0).optional(),
+});
+
+export type InsertToolCategory = z.infer<typeof insertToolCategorySchema>;
+export type ToolCategory = typeof toolCategories.$inferSelect;
+export type InsertBusinessTool = z.infer<typeof insertBusinessToolSchema>;
+export type BusinessTool = typeof businessTools.$inferSelect;
+export type InsertToolRecommendation = z.infer<typeof insertToolRecommendationSchema>;
+export type ToolRecommendation = typeof toolRecommendations.$inferSelect;
+export type InsertRecommendationEvent = z.infer<typeof insertRecommendationEventSchema>;
+export type RecommendationEvent = typeof recommendationEvents.$inferSelect;
 
 // =================== WORKFLOW DEFINITION INTERFACES ===================
 
