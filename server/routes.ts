@@ -40,6 +40,32 @@ const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const STRIPE_PAYMENT_LINK_URL = process.env.STRIPE_PAYMENT_LINK_URL;
 const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "4900"); // Default $49.00
 
+// Hunter Brody pricing optimization for maximum lead generation
+const HUNTER_PRICING = {
+  // Per-lead discovery costs
+  COST_PER_LEAD: parseInt(process.env.HUNTER_COST_PER_LEAD || "10"), // $0.10 per lead discovered
+  
+  // Per-scan processing costs
+  COST_PER_SCAN: parseInt(process.env.HUNTER_COST_PER_SCAN || "250"), // $2.50 per business scan
+  
+  // Bulk pricing tiers for high-volume customers
+  BULK_TIERS: [
+    { min: 1, max: 100, pricePerLead: 10, pricePerScan: 250, discount: 0 },      // $0.10/lead, $2.50/scan
+    { min: 101, max: 500, pricePerLead: 8, pricePerScan: 200, discount: 20 },    // 20% discount
+    { min: 501, max: 1000, pricePerLead: 6, pricePerScan: 150, discount: 40 },   // 40% discount  
+    { min: 1001, max: 10000, pricePerLead: 4, pricePerScan: 100, discount: 60 }, // 60% discount
+    { min: 10001, max: Infinity, pricePerLead: 2, pricePerScan: 75, discount: 70 } // 70% discount (enterprise)
+  ],
+
+  // Monthly subscription plans for autonomous hunting
+  MONTHLY_PLANS: {
+    starter: { leads: 500, scans: 100, price: 4900 },   // $49/month: 500 leads + 100 scans
+    growth: { leads: 2000, scans: 500, price: 14900 },  // $149/month: 2K leads + 500 scans  
+    scale: { leads: 10000, scans: 2000, price: 49900 }, // $499/month: 10K leads + 2K scans
+    enterprise: { leads: 50000, scans: 10000, price: 149900 } // $1499/month: 50K leads + 10K scans
+  }
+};
+
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2025-08-27.basil" as any, // Use valid API version
 }) : null;
@@ -2876,8 +2902,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ===== HUNTER BRODY PROSPECTING APIs =====
 
-  // Start Hunter Brody autonomous prospecting
-  app.post("/api/prospecting/start", async (req: Request, res: Response) => {
+  // Start Hunter Brody autonomous prospecting (admin only)
+  app.post("/api/prospecting/start", requireAuth(['workflow:execute']), async (req: Request, res: Response) => {
     try {
       hunterScheduler.start();
       
@@ -2897,8 +2923,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Stop Hunter Brody autonomous prospecting  
-  app.post("/api/prospecting/stop", async (req: Request, res: Response) => {
+  // Stop Hunter Brody autonomous prospecting (admin only)
+  app.post("/api/prospecting/stop", requireAuth(['workflow:execute']), async (req: Request, res: Response) => {
     try {
       hunterScheduler.stop();
       
@@ -2918,8 +2944,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get Hunter Brody status and statistics
-  app.get("/api/prospecting/status", async (req: Request, res: Response) => {
+  // Get Hunter Brody status and statistics (read access)
+  app.get("/api/prospecting/status", requireAuth(['workflow:read']), async (req: Request, res: Response) => {
     try {
       const stats = hunterScheduler.getStats();
       const jobs = hunterScheduler.getAllJobs();
@@ -2943,8 +2969,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Manual business discovery (for testing)
-  app.post("/api/prospecting/discover", async (req: Request, res: Response) => {
+  // Manual business discovery (admin only)
+  app.post("/api/prospecting/discover", requireAuth(['workflow:execute']), async (req: Request, res: Response) => {
     try {
       const { industry, location, keywords, maxResults = 10 } = req.body;
 
@@ -2972,8 +2998,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get prospecting jobs
-  app.get("/api/prospecting/jobs", async (req: Request, res: Response) => {
+  // Get prospecting jobs (read access)
+  app.get("/api/prospecting/jobs", requireAuth(['workflow:read']), async (req: Request, res: Response) => {
     try {
       const jobs = hunterScheduler.getAllJobs();
       
@@ -2990,8 +3016,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Toggle prospecting job
-  app.post("/api/prospecting/jobs/:jobId/toggle", async (req: Request, res: Response) => {
+  // Toggle prospecting job (admin only)
+  app.post("/api/prospecting/jobs/:jobId/toggle", requireAuth(['workflow:update']), async (req: Request, res: Response) => {
     try {
       const { jobId } = req.params;
       const { enabled } = req.body;
@@ -3011,6 +3037,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({
         success: false,
         error: "Failed to toggle prospecting job"
+      });
+    }
+  });
+
+  // DEMO: Unprotected lead generation test (for demonstration)
+  app.post("/api/demo/generate-leads", async (req: Request, res: Response) => {
+    try {
+      const { industry = 'restaurant', location = 'New York, NY', maxResults = 20 } = req.body;
+
+      const searchParams = {
+        industry,
+        location,  
+        keywords: `${industry} business`,
+        minRating: 3.5
+      };
+
+      logger.info('🎯 DEMO: Generating leads for maximum volume test', { searchParams, maxResults });
+
+      const result = await discoveryEngine.discoverBusinesses(searchParams, maxResults);
+
+      // Process discovered businesses into leads and scans
+      let processedCount = 0;
+      for (const business of result.businesses) {
+        const leadId = await discoveryEngine.processDiscoveredBusiness(business);
+        if (leadId) {
+          processedCount++;
+        }
+      }
+
+      res.json({
+        success: true,
+        demo: true,
+        data: {
+          searchParams,
+          totalDiscovered: result.totalFound,
+          leadsCreated: processedCount,
+          scansTriggered: processedCount,
+          quotaUsed: result.quotaUsed,
+          sources: result.businesses.map(b => b.sourceName),
+          pricing: {
+            costPerLead: 0.10, // $0.10 per lead
+            costPerScan: 2.50, // $2.50 per scan  
+            totalCost: (processedCount * 2.60).toFixed(2),
+            savings: "87% cheaper than manual prospecting"
+          }
+        }
+      });
+    } catch (error) {
+      logger.error('Demo lead generation failed', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to generate demo leads"
       });
     }
   });

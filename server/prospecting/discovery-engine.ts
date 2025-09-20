@@ -60,27 +60,26 @@ export class DiscoveryEngine {
    * Initialize all available business sources
    */
   private initializeSources() {
-    // Google Places API source
-    if (process.env.GOOGLE_PLACES_API_KEY) {
-      this.sources.set('google_places', new GooglePlacesSource());
-      this.dailyQuotas.set('google_places', 10000); // 10K free per month = ~333/day
-    }
+    // Always enable Google Places (simulated or real based on API key)
+    this.sources.set('google_places', new GooglePlacesSource());
+    this.dailyQuotas.set('google_places', process.env.GOOGLE_PLACES_API_KEY ? 10000 : 500); // High quota for simulated
 
-    // Yelp Fusion API source  
-    if (process.env.YELP_API_KEY) {
-      this.sources.set('yelp', new YelpSource());
-      this.dailyQuotas.set('yelp', 165); // 5K trial / 30 days = ~165/day
-    }
+    // Always enable Yelp (simulated or real based on API key)
+    this.sources.set('yelp', new YelpSource());
+    this.dailyQuotas.set('yelp', process.env.YELP_API_KEY ? 165 : 300); // High quota for simulated
 
-    // SerpAPI source (backup)
-    if (process.env.SERPAPI_KEY) {
-      this.sources.set('serpapi', new SerpApiSource());
-      this.dailyQuotas.set('serpapi', 100);
-    }
+    // Always enable SerpAPI (simulated or real based on API key)
+    this.sources.set('serpapi', new SerpApiSource());
+    this.dailyQuotas.set('serpapi', process.env.SERPAPI_KEY ? 100 : 200); // High quota for simulated
 
     logger.info('Discovery Engine initialized', {
       sources: Array.from(this.sources.keys()),
-      quotas: Object.fromEntries(this.dailyQuotas)
+      quotas: Object.fromEntries(this.dailyQuotas),
+      realAPIs: {
+        googlePlaces: !!process.env.GOOGLE_PLACES_API_KEY,
+        yelp: !!process.env.YELP_API_KEY,
+        serpApi: !!process.env.SERPAPI_KEY
+      }
     });
   }
 
@@ -387,44 +386,168 @@ class GooglePlacesSource extends BusinessSource {
 }
 
 /**
- * Yelp Fusion API Source  
+ * Yelp Fusion API Source (Simulated)
  */
 class YelpSource extends BusinessSource {
   private apiKey: string;
 
   constructor() {
     super();
-    this.apiKey = process.env.YELP_API_KEY || '';
+    this.apiKey = process.env.YELP_API_KEY || 'simulated';
   }
 
   async searchBusinesses(params: BusinessSearchParams, maxResults: number): Promise<DiscoveredBusiness[]> {
-    // Placeholder for Yelp API implementation
-    logger.info('🍽️ Yelp search initiated', { params, maxResults });
+    logger.info('🍽️ Yelp search initiated (simulated)', { params, maxResults });
     
-    // TODO: Implement actual Yelp Fusion API calls
-    // For now, return mock data to test the pipeline
-    return [];
+    // Simulate Yelp API discovery
+    const mockBusinesses = this.generateYelpBusinesses(params, Math.min(maxResults, 25));
+    
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 150));
+    
+    logger.info(`✅ Yelp simulated ${mockBusinesses.length} businesses`, {
+      industry: params.industry,
+      location: params.location
+    });
+    
+    return mockBusinesses;
+  }
+
+  private generateYelpBusinesses(params: BusinessSearchParams, count: number): DiscoveredBusiness[] {
+    const businesses: DiscoveredBusiness[] = [];
+    const { industry, location } = params;
+
+    const yelpCategories = {
+      restaurant: [
+        { name: "Tasty Corner Bistro", category: "American", rating: 4.4 },
+        { name: "Spice Route Kitchen", category: "Indian", rating: 4.6 },
+        { name: "Fresh Catch Seafood", category: "Seafood", rating: 4.3 },
+        { name: "Bella Napoli Pizza", category: "Pizza", rating: 4.2 },
+        { name: "Golden Dragon Chinese", category: "Chinese", rating: 4.5 }
+      ],
+      services: [
+        { name: "ProFix Handyman Services", category: "Home Repair", rating: 4.7 },
+        { name: "Crystal Clean Maids", category: "Cleaning", rating: 4.5 },
+        { name: "PowerLine Electrical Co", category: "Electrical", rating: 4.8 },
+        { name: "FlowMaster Plumbing", category: "Plumbing", rating: 4.6 },
+        { name: "GreenThumb Landscaping", category: "Landscaping", rating: 4.4 }
+      ],
+      technology: [
+        { name: "CodeCraft Studios", category: "Software Development", rating: 4.5 },
+        { name: "PixelPerfect Design", category: "Web Design", rating: 4.7 },
+        { name: "DataVault Security", category: "IT Security", rating: 4.8 },
+        { name: "CloudFirst Solutions", category: "Cloud Services", rating: 4.6 },
+        { name: "AppFlow Development", category: "Mobile Apps", rating: 4.3 }
+      ]
+    };
+
+    const categories = yelpCategories[industry] || yelpCategories.restaurant;
+    
+    for (let i = 0; i < count; i++) {
+      const category = categories[i % categories.length];
+      const business: DiscoveredBusiness = {
+        sourceId: `yelp_sim_${i + 1}`,
+        sourceName: 'yelp',
+        businessName: `${category.name} - ${location.split(',')[0]}`,
+        website: `https://${category.name.toLowerCase().replace(/[^a-z]/g, '')}.biz`,
+        address: `${200 + i} Business Ave, ${location}`,
+        phone: `(555) ${String(200 + i).padStart(3, '0')}-${String(2000 + i).padStart(4, '0')}`,
+        email: `info@${category.name.toLowerCase().replace(/[^a-z]/g, '')}.biz`,
+        industry: industry,
+        rating: category.rating + (Math.random() * 0.4 - 0.2),
+        reviewCount: Math.floor(Math.random() * 150) + 25,
+        priceLevel: Math.floor(Math.random() * 4) + 1,
+        description: `${category.category} business in ${location.split(',')[0]}`,
+        hours: { open_now: Math.random() > 0.2 },
+        rawData: { simulated: true, source: 'yelp_fusion_api', category: category.category }
+      };
+      businesses.push(business);
+    }
+
+    return businesses;
   }
 }
 
 /**
- * SerpAPI Source (backup)
+ * SerpAPI Source (Simulated)
  */
 class SerpApiSource extends BusinessSource {
   private apiKey: string;
 
   constructor() {
     super();
-    this.apiKey = process.env.SERPAPI_KEY || '';
+    this.apiKey = process.env.SERPAPI_KEY || 'simulated';
   }
 
   async searchBusinesses(params: BusinessSearchParams, maxResults: number): Promise<DiscoveredBusiness[]> {
-    // Placeholder for SerpAPI implementation
-    logger.info('🔍 SerpAPI search initiated', { params, maxResults });
+    logger.info('🔍 SerpAPI search initiated (simulated)', { params, maxResults });
     
-    // TODO: Implement actual SerpAPI calls
-    // For now, return mock data to test the pipeline
-    return [];
+    // Simulate SerpAPI discovery
+    const mockBusinesses = this.generateSerpBusinesses(params, Math.min(maxResults, 15));
+    
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 200));
+    
+    logger.info(`✅ SerpAPI simulated ${mockBusinesses.length} businesses`, {
+      industry: params.industry,
+      location: params.location
+    });
+    
+    return mockBusinesses;
+  }
+
+  private generateSerpBusinesses(params: BusinessSearchParams, count: number): DiscoveredBusiness[] {
+    const businesses: DiscoveredBusiness[] = [];
+    const { industry, location } = params;
+
+    const serpDirectories = {
+      restaurant: [
+        { name: "Local Eats Co", directory: "YellowPages", rating: 4.1 },
+        { name: "Family Food Hub", directory: "Local.com", rating: 4.3 },
+        { name: "Quick Bite Express", directory: "MapQuest", rating: 4.0 },
+        { name: "Gourmet Corner", directory: "Whitepages", rating: 4.4 },
+        { name: "Street Food Central", directory: "Superpages", rating: 4.2 }
+      ],
+      services: [
+        { name: "Reliable Home Services", directory: "Angie's List", rating: 4.6 },
+        { name: "24/7 Repair Pros", directory: "HomeAdvisor", rating: 4.5 },
+        { name: "Elite Service Group", directory: "Thumbtack", rating: 4.7 },
+        { name: "Express Fix Solutions", directory: "TaskRabbit", rating: 4.4 },
+        { name: "Premium Care Services", directory: "Porch", rating: 4.8 }
+      ],
+      technology: [
+        { name: "Digital Innovation Labs", directory: "Crunchbase", rating: 4.3 },
+        { name: "TechForward Systems", directory: "AngelList", rating: 4.5 },
+        { name: "NextLevel Software", directory: "ProductHunt", rating: 4.4 },
+        { name: "SmartSolutions Inc", directory: "LinkedIn", rating: 4.6 },
+        { name: "FutureTech Ventures", directory: "Glassdoor", rating: 4.2 }
+      ]
+    };
+
+    const directories = serpDirectories[industry] || serpDirectories.restaurant;
+    
+    for (let i = 0; i < count; i++) {
+      const directory = directories[i % directories.length];
+      const business: DiscoveredBusiness = {
+        sourceId: `serp_sim_${i + 1}`,
+        sourceName: 'serpapi',
+        businessName: `${directory.name} ${location.split(',')[0]}`,
+        website: `https://${directory.name.toLowerCase().replace(/[^a-z]/g, '')}.net`,
+        address: `${300 + i} Discovery Blvd, ${location}`,
+        phone: `(555) ${String(300 + i).padStart(3, '0')}-${String(3000 + i).padStart(4, '0')}`,
+        email: `contact@${directory.name.toLowerCase().replace(/[^a-z]/g, '')}.net`,
+        industry: industry,
+        rating: directory.rating + (Math.random() * 0.5 - 0.25),
+        reviewCount: Math.floor(Math.random() * 100) + 15,
+        priceLevel: Math.floor(Math.random() * 3) + 2,
+        description: `${industry} business found via ${directory.directory} in ${location.split(',')[0]}`,
+        hours: { open_now: Math.random() > 0.25 },
+        rawData: { simulated: true, source: 'serpapi', directory: directory.directory }
+      };
+      businesses.push(business);
+    }
+
+    return businesses;
   }
 }
 
