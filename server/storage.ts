@@ -8,6 +8,10 @@ import {
   emailLog,
   payments,
   chatMessages,
+  workflows,
+  workflowVersions,
+  workflowRuns,
+  workflowRunSteps,
   type User, 
   type InsertUser, 
   type ScanResult, 
@@ -25,7 +29,15 @@ import {
   type Payment,
   type InsertPayment,
   type ChatMessage,
-  type InsertChatMessage
+  type InsertChatMessage,
+  type Workflow,
+  type InsertWorkflow,
+  type WorkflowVersion,
+  type InsertWorkflowVersion,
+  type WorkflowRun,
+  type InsertWorkflowRun,
+  type WorkflowRunStep,
+  type InsertWorkflowRunStep
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, count, sql, asc, or, gte, lte } from "drizzle-orm";
@@ -92,6 +104,32 @@ export interface IStorage {
   getChatMessagesByLeadId(leadId: string): Promise<ChatMessage[]>;
   getChatMessagesByScanId(scanId: string): Promise<ChatMessage[]>;
   createChatMessage(chatMessage: InsertChatMessage): Promise<ChatMessage>;
+  
+  // Workflow operations
+  getWorkflow(id: string): Promise<Workflow | undefined>;
+  getWorkflowByName(name: string): Promise<Workflow | undefined>;
+  getPublishedWorkflowByBusinessType(businessType: string): Promise<WorkflowVersion | undefined>;
+  getDefaultPublishedWorkflow(): Promise<WorkflowVersion | undefined>;
+  createWorkflow(workflow: InsertWorkflow): Promise<Workflow>;
+  updateWorkflow(id: string, updates: Partial<Workflow>): Promise<Workflow | undefined>;
+  
+  // Workflow version operations
+  getWorkflowVersion(id: string): Promise<WorkflowVersion | undefined>;
+  getWorkflowVersionsByWorkflowId(workflowId: string): Promise<WorkflowVersion[]>;
+  createWorkflowVersion(version: InsertWorkflowVersion): Promise<WorkflowVersion>;
+  updateWorkflowVersion(id: string, updates: Partial<WorkflowVersion>): Promise<WorkflowVersion | undefined>;
+  
+  // Workflow run operations
+  getWorkflowRun(id: string): Promise<WorkflowRun | undefined>;
+  getWorkflowRunsByStatus(status: string): Promise<WorkflowRun[]>;
+  createWorkflowRun(run: InsertWorkflowRun): Promise<WorkflowRun>;
+  updateWorkflowRun(id: string, updates: Partial<WorkflowRun>): Promise<WorkflowRun | undefined>;
+  
+  // Workflow run step operations
+  getWorkflowRunStep(id: string): Promise<WorkflowRunStep | undefined>;
+  getWorkflowRunSteps(runId: string): Promise<WorkflowRunStep[]>;
+  createWorkflowRunStep(step: InsertWorkflowRunStep): Promise<WorkflowRunStep>;
+  updateWorkflowRunStep(id: string, updates: Partial<WorkflowRunStep>): Promise<WorkflowRunStep | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -624,6 +662,174 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return message;
+  }
+
+  // Workflow operations implementation
+  async getWorkflow(id: string): Promise<Workflow | undefined> {
+    const [workflow] = await db.select().from(workflows).where(eq(workflows.id, id));
+    return workflow || undefined;
+  }
+
+  async getWorkflowByName(name: string): Promise<Workflow | undefined> {
+    const [workflow] = await db.select().from(workflows).where(eq(workflows.name, name));
+    return workflow || undefined;
+  }
+
+  async getPublishedWorkflowByBusinessType(businessType: string): Promise<WorkflowVersion | undefined> {
+    const [result] = await db
+      .select({
+        id: workflowVersions.id,
+        workflowId: workflowVersions.workflowId,
+        version: workflowVersions.version,
+        status: workflowVersions.status,
+        definition: workflowVersions.definition,
+        createdAt: workflowVersions.createdAt,
+      })
+      .from(workflowVersions)
+      .innerJoin(workflows, eq(workflows.activeVersionId, workflowVersions.id))
+      .where(
+        and(
+          eq(workflows.businessType, businessType),
+          eq(workflowVersions.status, "published")
+        )
+      )
+      .limit(1);
+    return result || undefined;
+  }
+
+  async getDefaultPublishedWorkflow(): Promise<WorkflowVersion | undefined> {
+    const [result] = await db
+      .select({
+        id: workflowVersions.id,
+        workflowId: workflowVersions.workflowId,
+        version: workflowVersions.version,
+        status: workflowVersions.status,
+        definition: workflowVersions.definition,
+        createdAt: workflowVersions.createdAt,
+      })
+      .from(workflowVersions)
+      .innerJoin(workflows, eq(workflows.activeVersionId, workflowVersions.id))
+      .where(
+        and(
+          eq(workflows.isDefault, true),
+          eq(workflowVersions.status, "published")
+        )
+      )
+      .limit(1);
+    return result || undefined;
+  }
+
+  async createWorkflow(insertWorkflow: InsertWorkflow): Promise<Workflow> {
+    const [workflow] = await db
+      .insert(workflows)
+      .values(insertWorkflow)
+      .returning();
+    return workflow;
+  }
+
+  async updateWorkflow(id: string, updates: Partial<Workflow>): Promise<Workflow | undefined> {
+    const [workflow] = await db
+      .update(workflows)
+      .set(updates)
+      .where(eq(workflows.id, id))
+      .returning();
+    return workflow || undefined;
+  }
+
+  // Workflow version operations implementation
+  async getWorkflowVersion(id: string): Promise<WorkflowVersion | undefined> {
+    const [version] = await db.select().from(workflowVersions).where(eq(workflowVersions.id, id));
+    return version || undefined;
+  }
+
+  async getWorkflowVersionsByWorkflowId(workflowId: string): Promise<WorkflowVersion[]> {
+    const versions = await db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.workflowId, workflowId))
+      .orderBy(desc(workflowVersions.version));
+    return versions;
+  }
+
+  async createWorkflowVersion(insertVersion: InsertWorkflowVersion): Promise<WorkflowVersion> {
+    const [version] = await db
+      .insert(workflowVersions)
+      .values(insertVersion)
+      .returning();
+    return version;
+  }
+
+  async updateWorkflowVersion(id: string, updates: Partial<WorkflowVersion>): Promise<WorkflowVersion | undefined> {
+    const [version] = await db
+      .update(workflowVersions)
+      .set(updates)
+      .where(eq(workflowVersions.id, id))
+      .returning();
+    return version || undefined;
+  }
+
+  // Workflow run operations implementation
+  async getWorkflowRun(id: string): Promise<WorkflowRun | undefined> {
+    const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, id));
+    return run || undefined;
+  }
+
+  async getWorkflowRunsByStatus(status: string): Promise<WorkflowRun[]> {
+    const runs = await db
+      .select()
+      .from(workflowRuns)
+      .where(eq(workflowRuns.status, status))
+      .orderBy(asc(workflowRuns.createdAt));
+    return runs;
+  }
+
+  async createWorkflowRun(insertRun: InsertWorkflowRun): Promise<WorkflowRun> {
+    const [run] = await db
+      .insert(workflowRuns)
+      .values(insertRun)
+      .returning();
+    return run;
+  }
+
+  async updateWorkflowRun(id: string, updates: Partial<WorkflowRun>): Promise<WorkflowRun | undefined> {
+    const [run] = await db
+      .update(workflowRuns)
+      .set(updates)
+      .where(eq(workflowRuns.id, id))
+      .returning();
+    return run || undefined;
+  }
+
+  // Workflow run step operations implementation
+  async getWorkflowRunStep(id: string): Promise<WorkflowRunStep | undefined> {
+    const [step] = await db.select().from(workflowRunSteps).where(eq(workflowRunSteps.id, id));
+    return step || undefined;
+  }
+
+  async getWorkflowRunSteps(runId: string): Promise<WorkflowRunStep[]> {
+    const steps = await db
+      .select()
+      .from(workflowRunSteps)
+      .where(eq(workflowRunSteps.runId, runId))
+      .orderBy(asc(workflowRunSteps.startedAt));
+    return steps;
+  }
+
+  async createWorkflowRunStep(insertStep: InsertWorkflowRunStep): Promise<WorkflowRunStep> {
+    const [step] = await db
+      .insert(workflowRunSteps)
+      .values(insertStep)
+      .returning();
+    return step;
+  }
+
+  async updateWorkflowRunStep(id: string, updates: Partial<WorkflowRunStep>): Promise<WorkflowRunStep | undefined> {
+    const [step] = await db
+      .update(workflowRunSteps)
+      .set(updates)
+      .where(eq(workflowRunSteps.id, id))
+      .returning();
+    return step || undefined;
   }
 }
 
