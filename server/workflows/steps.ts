@@ -1,0 +1,1053 @@
+import { z } from "zod";
+import { classifyEmailDomain, shouldFlagLead, getFlaggingReason } from "../utils/emailDomainFilter";
+
+/**
+ * Context passed to each step during workflow execution
+ */
+export interface StepContext {
+  /** Current workflow run ID */
+  runId: string;
+  /** Optional scan result ID for scan-related workflows */
+  scanId?: string;
+  /** Optional lead ID for lead-related workflows */
+  leadId?: string;
+  /** Shared context data that persists across steps */
+  data: Record<string, any>;
+  /** Storage interface for database operations */
+  storage: any; // TODO: Import proper storage interface
+  /** Logger instance for step logging */
+  logger: any; // TODO: Import proper logger interface
+}
+
+/**
+ * Result returned by step execution
+ */
+export interface StepResult {
+  /** Context updates to merge into workflow context */
+  updates?: Record<string, any>;
+  /** Step output data for subsequent steps */
+  outputs?: Record<string, any>;
+}
+
+/**
+ * Configuration for a workflow step instance
+ */
+export interface WorkflowStepConfig {
+  /** Unique key for this step within the workflow */
+  key: string;
+  /** Step type identifier */
+  type: string;
+  /** Step-specific configuration */
+  config: Record<string, any>;
+  /** Optional step name for display */
+  name?: string;
+  /** Optional step description */
+  description?: string;
+}
+
+/**
+ * Definition of a step type in the registry
+ */
+export interface StepDefinition {
+  /** Zod schema for validating step configuration */
+  configSchema: z.ZodSchema<any>;
+  /** Function to execute the step */
+  run: (context: StepContext, config: any) => Promise<StepResult>;
+  /** Optional step type description */
+  description?: string;
+}
+
+/**
+ * Type-safe step registry mapping step types to their definitions
+ */
+export type StepRegistry = Record<string, StepDefinition>;
+
+/**
+ * Helper function to safely handle async operations with error logging
+ */
+async function safeExecute<T>(
+  context: StepContext,
+  stepType: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    context.logger?.error(`Error in ${stepType} step:`, { error: errorMessage, runId: context.runId });
+    throw new Error(`${stepType} step failed: ${errorMessage}`);
+  }
+}
+
+// =================== STEP IMPLEMENTATIONS ===================
+
+/**
+ * fetchWebsite: Fetch website content and metadata
+ * Retrieves website content, extracts metadata, and performs basic analysis
+ */
+const fetchWebsiteSchema = z.object({
+  url: z.string().url("Valid URL required"),
+  timeout: z.number().min(1000).max(30000).optional().default(10000),
+  followRedirects: z.boolean().optional().default(true),
+  extractMetadata: z.boolean().optional().default(true)
+});
+
+async function fetchWebsiteStep(context: StepContext, config: z.infer<typeof fetchWebsiteSchema>): Promise<StepResult> {
+  return safeExecute(context, 'fetchWebsite', async () => {
+    context.logger?.info(`Fetching website: ${config.url}`, { runId: context.runId });
+
+    // Use fetch with timeout and proper headers
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), config.timeout);
+    
+    try {
+      const response = await fetch(config.url, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; LeadScanner/1.0)',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        },
+        redirect: config.followRedirects ? 'follow' : 'manual'
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const content = await response.text();
+      const contentType = response.headers.get('content-type') || '';
+      
+      // Extract basic metadata
+      let metadata: Record<string, any> = {
+        statusCode: response.status,
+        contentType,
+        contentLength: content.length,
+        finalUrl: response.url,
+        headers: Object.fromEntries(response.headers.entries())
+      };
+
+      if (config.extractMetadata) {
+        // Extract title
+        const titleMatch = content.match(/<title[^>]*>([^<]*)<\/title>/i);
+        if (titleMatch) {
+          metadata.title = titleMatch[1].trim();
+        }
+
+        // Extract meta description
+        const descMatch = content.match(/<meta[^>]*name="description"[^>]*content="([^"]*)"[^>]*>/i);
+        if (descMatch) {
+          metadata.description = descMatch[1].trim();
+        }
+
+        // Extract meta keywords
+        const keywordsMatch = content.match(/<meta[^>]*name="keywords"[^>]*content="([^"]*)"[^>]*>/i);
+        if (keywordsMatch) {
+          metadata.keywords = keywordsMatch[1].trim().split(',').map(k => k.trim());
+        }
+
+        // Check for common technologies
+        metadata.technologies = {
+          hasWordPress: content.includes('wp-content') || content.includes('wordpress'),
+          hasReact: content.includes('react') || content.includes('__REACT'),
+          hasAngular: content.includes('ng-') || content.includes('angular'),
+          hasVue: content.includes('vue') || content.includes('__vue'),
+          hasBootstrap: content.includes('bootstrap'),
+          hasGoogleAnalytics: content.includes('google-analytics') || content.includes('gtag'),
+          hasGTM: content.includes('googletagmanager'),
+          hasFacebook: content.includes('facebook.com') || content.includes('fbevents'),
+          hasLinkedIn: content.includes('linkedin.com') || content.includes('_linkedin_partner_id')
+        };
+      }
+
+      const outputs = {
+        content,
+        metadata,
+        url: config.url,
+        fetchedAt: new Date().toISOString()
+      };
+
+      context.logger?.info(`Successfully fetched website`, { 
+        runId: context.runId, 
+        contentLength: content.length,
+        statusCode: response.status 
+      });
+
+      return {
+        updates: { websiteContent: content, websiteMetadata: metadata },
+        outputs
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  });
+}
+
+/**
+ * seoScan: Perform SEO analysis on the website
+ * Analyzes website content for SEO factors and technical issues
+ */
+const seoScanSchema = z.object({
+  content: z.string().optional(),
+  url: z.string().url().optional(),
+  checkTechnical: z.boolean().optional().default(true),
+  checkContent: z.boolean().optional().default(true)
+});
+
+async function seoScanStep(context: StepContext, config: z.infer<typeof seoScanSchema>): Promise<StepResult> {
+  return safeExecute(context, 'seoScan', async () => {
+    context.logger?.info(`Running SEO scan`, { runId: context.runId });
+
+    const content = config.content || context.data.websiteContent;
+    const metadata = context.data.websiteMetadata || {};
+
+    if (!content) {
+      throw new Error('No website content available for SEO scan');
+    }
+
+    const seoAnalysis: Record<string, any> = {
+      score: 0,
+      issues: [],
+      recommendations: [],
+      technicalSeo: {},
+      contentSeo: {},
+      scanDate: new Date().toISOString()
+    };
+
+    let totalChecks = 0;
+    let passedChecks = 0;
+
+    if (config.checkTechnical) {
+      // Technical SEO checks
+      const technical = seoAnalysis.technicalSeo;
+
+      // Title tag check
+      totalChecks++;
+      if (metadata.title && metadata.title.length > 0) {
+        passedChecks++;
+        technical.hasTitle = true;
+        if (metadata.title.length > 60) {
+          seoAnalysis.issues.push('Title tag is too long (over 60 characters)');
+          seoAnalysis.recommendations.push('Shorten title tag to under 60 characters');
+        }
+      } else {
+        technical.hasTitle = false;
+        seoAnalysis.issues.push('Missing title tag');
+        seoAnalysis.recommendations.push('Add a descriptive title tag');
+      }
+
+      // Meta description check
+      totalChecks++;
+      if (metadata.description && metadata.description.length > 0) {
+        passedChecks++;
+        technical.hasDescription = true;
+        if (metadata.description.length > 160) {
+          seoAnalysis.issues.push('Meta description is too long (over 160 characters)');
+          seoAnalysis.recommendations.push('Shorten meta description to under 160 characters');
+        }
+      } else {
+        technical.hasDescription = false;
+        seoAnalysis.issues.push('Missing meta description');
+        seoAnalysis.recommendations.push('Add a compelling meta description');
+      }
+
+      // H1 tag check
+      totalChecks++;
+      const h1Matches = content.match(/<h1[^>]*>([^<]*)<\/h1>/gi);
+      technical.h1Count = h1Matches ? h1Matches.length : 0;
+      if (technical.h1Count === 1) {
+        passedChecks++;
+      } else if (technical.h1Count === 0) {
+        seoAnalysis.issues.push('No H1 tag found');
+        seoAnalysis.recommendations.push('Add exactly one H1 tag to the page');
+      } else {
+        seoAnalysis.issues.push(`Multiple H1 tags found (${technical.h1Count})`);
+        seoAnalysis.recommendations.push('Use only one H1 tag per page');
+      }
+
+      // Image alt tags check
+      totalChecks++;
+      const imgMatches = content.match(/<img[^>]*>/gi) || [];
+      const imagesWithoutAlt = imgMatches.filter((img: string) => !img.includes('alt='));
+      technical.totalImages = imgMatches.length;
+      technical.imagesWithoutAlt = imagesWithoutAlt.length;
+      if (technical.imagesWithoutAlt === 0 && technical.totalImages > 0) {
+        passedChecks++;
+      } else if (technical.imagesWithoutAlt > 0) {
+        seoAnalysis.issues.push(`${technical.imagesWithoutAlt} images missing alt attributes`);
+        seoAnalysis.recommendations.push('Add descriptive alt text to all images');
+      }
+
+      // HTTPS check
+      totalChecks++;
+      const url = config.url || context.data.websiteMetadata?.finalUrl;
+      if (url && url.startsWith('https://')) {
+        passedChecks++;
+        technical.hasHttps = true;
+      } else {
+        technical.hasHttps = false;
+        seoAnalysis.issues.push('Website not using HTTPS');
+        seoAnalysis.recommendations.push('Implement SSL certificate for HTTPS');
+      }
+    }
+
+    if (config.checkContent) {
+      // Content SEO checks
+      const contentSeo = seoAnalysis.contentSeo;
+
+      // Word count
+      const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      const wordCount = textContent.split(' ').filter((word: string) => word.length > 0).length;
+      contentSeo.wordCount = wordCount;
+
+      totalChecks++;
+      if (wordCount >= 300) {
+        passedChecks++;
+      } else {
+        seoAnalysis.issues.push(`Low word count (${wordCount} words)`);
+        seoAnalysis.recommendations.push('Add more quality content (aim for 300+ words)');
+      }
+
+      // Heading structure
+      const headings = {
+        h1: (content.match(/<h1[^>]*>/gi) || []).length,
+        h2: (content.match(/<h2[^>]*>/gi) || []).length,
+        h3: (content.match(/<h3[^>]*>/gi) || []).length,
+        h4: (content.match(/<h4[^>]*>/gi) || []).length,
+        h5: (content.match(/<h5[^>]*>/gi) || []).length,
+        h6: (content.match(/<h6[^>]*>/gi) || []).length
+      };
+      contentSeo.headingStructure = headings;
+
+      totalChecks++;
+      if (headings.h2 > 0) {
+        passedChecks++;
+      } else {
+        seoAnalysis.issues.push('No H2 headings found');
+        seoAnalysis.recommendations.push('Add H2 headings to structure your content');
+      }
+    }
+
+    // Calculate overall score
+    seoAnalysis.score = totalChecks > 0 ? Math.round((passedChecks / totalChecks) * 100) : 0;
+
+    const outputs = {
+      seoAnalysis,
+      score: seoAnalysis.score,
+      issues: seoAnalysis.issues,
+      recommendations: seoAnalysis.recommendations
+    };
+
+    context.logger?.info(`SEO scan completed`, { 
+      runId: context.runId, 
+      score: seoAnalysis.score,
+      issuesFound: seoAnalysis.issues.length 
+    });
+
+    return {
+      updates: { seoAnalysis },
+      outputs
+    };
+  });
+}
+
+/**
+ * emailEnrichment: Enrich lead with email information
+ * Attempts to find and validate email addresses for the business
+ */
+const emailEnrichmentSchema = z.object({
+  domain: z.string().optional(),
+  businessName: z.string().optional(),
+  searchPatterns: z.array(z.string()).optional().default(['info@', 'contact@', 'hello@', 'support@'])
+});
+
+async function emailEnrichmentStep(context: StepContext, config: z.infer<typeof emailEnrichmentSchema>): Promise<StepResult> {
+  return safeExecute(context, 'emailEnrichment', async () => {
+    context.logger?.info(`Running email enrichment`, { runId: context.runId });
+
+    const domain = config.domain || context.data.websiteMetadata?.finalUrl?.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+    const businessName = config.businessName || context.data.businessName;
+    const websiteContent = context.data.websiteContent || '';
+
+    if (!domain) {
+      throw new Error('No domain available for email enrichment');
+    }
+
+    const enrichmentResult: Record<string, any> = {
+      domain,
+      businessName,
+      foundEmails: [],
+      suggestedEmails: [],
+      extractedFromContent: [],
+      enrichmentDate: new Date().toISOString()
+    };
+
+    // Extract emails from website content
+    const emailRegex = /[\w\.-]+@[\w\.-]+\.\w+/g;
+    const foundEmails = websiteContent.match(emailRegex) || [];
+    
+    // Filter and clean found emails
+    const cleanEmails = Array.from(new Set(foundEmails as string[]))
+      .filter((email: string) => {
+        const emailDomain = email.split('@')[1];
+        return emailDomain && emailDomain.toLowerCase().includes(domain.toLowerCase().split('.')[0]);
+      })
+      .filter((email: string) => !email.includes('example.') && !email.includes('test.') && !email.includes('demo.'));
+
+    enrichmentResult.extractedFromContent = cleanEmails;
+
+    // Generate suggested emails based on common patterns
+    const domainParts = domain.split('.');
+    const mainDomain = domainParts.slice(-2).join('.');
+    
+    for (const pattern of config.searchPatterns) {
+      enrichmentResult.suggestedEmails.push(`${pattern}${mainDomain}`);
+    }
+
+    // If business name is available, create personalized suggestions
+    if (businessName) {
+      const cleanBusinessName = businessName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (cleanBusinessName.length <= 10) {
+        enrichmentResult.suggestedEmails.push(`${cleanBusinessName}@${mainDomain}`);
+        enrichmentResult.suggestedEmails.push(`contact@${cleanBusinessName}.com`);
+      }
+    }
+
+    // Combine and deduplicate all found emails
+    enrichmentResult.foundEmails = Array.from(new Set([
+      ...enrichmentResult.extractedFromContent,
+      ...enrichmentResult.suggestedEmails.filter((email: string) => cleanEmails.includes(email))
+    ]));
+
+    const outputs = {
+      enrichmentResult,
+      foundEmails: enrichmentResult.foundEmails,
+      domain: enrichmentResult.domain
+    };
+
+    context.logger?.info(`Email enrichment completed`, { 
+      runId: context.runId, 
+      foundEmails: enrichmentResult.foundEmails.length,
+      suggestedEmails: enrichmentResult.suggestedEmails.length
+    });
+
+    return {
+      updates: { emailEnrichment: enrichmentResult },
+      outputs
+    };
+  });
+}
+
+/**
+ * validateEmailDomain: Validate email domain using existing emailDomainFilter
+ * Uses the existing domain classification utility to validate and classify emails
+ */
+const validateEmailDomainSchema = z.object({
+  email: z.string().email().optional(),
+  emails: z.array(z.string().email()).optional()
+});
+
+async function validateEmailDomainStep(context: StepContext, config: z.infer<typeof validateEmailDomainSchema>): Promise<StepResult> {
+  return safeExecute(context, 'validateEmailDomain', async () => {
+    context.logger?.info(`Validating email domains`, { runId: context.runId });
+
+    const emailsToValidate: string[] = [];
+    
+    if (config.email) {
+      emailsToValidate.push(config.email);
+    }
+    
+    if (config.emails) {
+      emailsToValidate.push(...config.emails);
+    }
+
+    // If no emails provided, try to get from context
+    if (emailsToValidate.length === 0) {
+      const contextEmail = context.data.email;
+      const foundEmails = context.data.emailEnrichment?.foundEmails || [];
+      
+      if (contextEmail) emailsToValidate.push(contextEmail);
+      if (foundEmails.length > 0) emailsToValidate.push(...foundEmails);
+    }
+
+    if (emailsToValidate.length === 0) {
+      throw new Error('No emails provided for domain validation');
+    }
+
+    const validationResults = emailsToValidate.map(email => {
+      try {
+        const classification = classifyEmailDomain(email);
+        const shouldFlag = shouldFlagLead(email);
+        const reason = getFlaggingReason(email);
+
+        return {
+          email,
+          domain: classification.domain,
+          isPersonal: classification.isPersonal,
+          isDisposable: classification.isDisposable,
+          isBusiness: !classification.isPersonal && !classification.isDisposable,
+          shouldFlag,
+          flagReason: shouldFlag ? reason : null,
+          isValid: true
+        };
+      } catch (error) {
+        return {
+          email,
+          domain: null,
+          isPersonal: false,
+          isDisposable: false,
+          isBusiness: false,
+          shouldFlag: true,
+          flagReason: 'Invalid email format',
+          isValid: false,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        };
+      }
+    });
+
+    const summary = {
+      totalEmails: validationResults.length,
+      validEmails: validationResults.filter(r => r.isValid).length,
+      businessEmails: validationResults.filter(r => r.isBusiness).length,
+      personalEmails: validationResults.filter(r => r.isPersonal).length,
+      disposableEmails: validationResults.filter(r => r.isDisposable).length,
+      flaggedEmails: validationResults.filter(r => r.shouldFlag).length,
+      recommendedEmails: validationResults.filter(r => r.isBusiness && !r.shouldFlag)
+    };
+
+    const outputs = {
+      validationResults,
+      summary,
+      recommendedEmail: summary.recommendedEmails.length > 0 ? validationResults.find(r => r.isBusiness && !r.shouldFlag)?.email : null
+    };
+
+    context.logger?.info(`Email domain validation completed`, { 
+      runId: context.runId, 
+      totalEmails: summary.totalEmails,
+      businessEmails: summary.businessEmails,
+      flaggedEmails: summary.flaggedEmails
+    });
+
+    return {
+      updates: { emailValidation: { results: validationResults, summary } },
+      outputs
+    };
+  });
+}
+
+/**
+ * scoreBusiness: Calculate business score based on collected data
+ * Analyzes all collected data to generate a comprehensive business score
+ */
+const scoreBusinessSchema = z.object({
+  weights: z.object({
+    seo: z.number().min(0).max(1).optional().default(0.25),
+    email: z.number().min(0).max(1).optional().default(0.25),
+    website: z.number().min(0).max(1).optional().default(0.25),
+    technical: z.number().min(0).max(1).optional().default(0.25)
+  }).optional().default({}),
+  includeRecommendations: z.boolean().optional().default(true)
+});
+
+async function scoreBusinessStep(context: StepContext, config: z.infer<typeof scoreBusinessSchema>): Promise<StepResult> {
+  return safeExecute(context, 'scoreBusiness', async () => {
+    context.logger?.info(`Calculating business score`, { runId: context.runId });
+
+    const weights = { ...{ seo: 0.25, email: 0.25, website: 0.25, technical: 0.25 }, ...config.weights };
+    const seoAnalysis = context.data.seoAnalysis;
+    const emailValidation = context.data.emailValidation;
+    const websiteMetadata = context.data.websiteMetadata;
+    const emailEnrichment = context.data.emailEnrichment;
+
+    const scoring = {
+      seoScore: 0,
+      emailScore: 0,
+      websiteScore: 0,
+      technicalScore: 0,
+      overallScore: 0,
+      maxPossibleScore: 100,
+      factors: {} as Record<string, any>,
+      recommendations: [] as string[],
+      strengths: [] as string[],
+      weaknesses: [] as string[],
+      scoringDate: new Date().toISOString()
+    };
+
+    // SEO Score (0-100)
+    if (seoAnalysis) {
+      scoring.seoScore = seoAnalysis.score || 0;
+      scoring.factors.seo = {
+        score: scoring.seoScore,
+        issues: seoAnalysis.issues?.length || 0,
+        recommendations: seoAnalysis.recommendations?.length || 0,
+        hasTechnicalSeo: !!seoAnalysis.technicalSeo,
+        hasContentSeo: !!seoAnalysis.contentSeo
+      };
+
+      if (scoring.seoScore >= 80) {
+        scoring.strengths.push('Excellent SEO optimization');
+      } else if (scoring.seoScore >= 60) {
+        scoring.strengths.push('Good SEO foundation');
+      } else {
+        scoring.weaknesses.push('SEO needs improvement');
+        if (config.includeRecommendations) {
+          scoring.recommendations.push('Improve SEO by addressing technical and content issues');
+        }
+      }
+    }
+
+    // Email Score (0-100)
+    if (emailValidation && emailEnrichment) {
+      let emailScore = 0;
+      const summary = emailValidation.summary;
+      
+      // Score based on business email availability and quality
+      if (summary.businessEmails > 0) emailScore += 40;
+      if (summary.flaggedEmails === 0) emailScore += 30;
+      if (emailEnrichment.foundEmails?.length > 0) emailScore += 20;
+      if (summary.validEmails > 1) emailScore += 10;
+
+      scoring.emailScore = Math.min(emailScore, 100);
+      scoring.factors.email = {
+        score: scoring.emailScore,
+        totalEmails: summary.totalEmails,
+        businessEmails: summary.businessEmails,
+        flaggedEmails: summary.flaggedEmails,
+        foundEmails: emailEnrichment.foundEmails?.length || 0
+      };
+
+      if (scoring.emailScore >= 70) {
+        scoring.strengths.push('Professional email setup');
+      } else {
+        scoring.weaknesses.push('Limited professional email presence');
+        if (config.includeRecommendations) {
+          scoring.recommendations.push('Set up professional business email addresses');
+        }
+      }
+    }
+
+    // Website Score (0-100)
+    if (websiteMetadata) {
+      let websiteScore = 0;
+      
+      // Basic functionality
+      if (websiteMetadata.statusCode === 200) websiteScore += 25;
+      if (websiteMetadata.hasHttps) websiteScore += 20;
+      if (websiteMetadata.title) websiteScore += 15;
+      if (websiteMetadata.description) websiteScore += 15;
+      
+      // Technologies and features
+      const tech = websiteMetadata.technologies || {};
+      const modernTech = tech.hasReact || tech.hasAngular || tech.hasVue;
+      const analytics = tech.hasGoogleAnalytics || tech.hasGTM;
+      const social = tech.hasFacebook || tech.hasLinkedIn;
+      
+      if (modernTech) websiteScore += 10;
+      if (analytics) websiteScore += 10;
+      if (social) websiteScore += 5;
+
+      scoring.websiteScore = Math.min(websiteScore, 100);
+      scoring.factors.website = {
+        score: scoring.websiteScore,
+        hasHttps: websiteMetadata.hasHttps,
+        hasTitle: !!websiteMetadata.title,
+        hasDescription: !!websiteMetadata.description,
+        hasModernTech: modernTech,
+        hasAnalytics: analytics,
+        hasSocialIntegration: social
+      };
+
+      if (scoring.websiteScore >= 80) {
+        scoring.strengths.push('Professional website with modern features');
+      } else if (scoring.websiteScore >= 60) {
+        scoring.strengths.push('Functional website');
+      } else {
+        scoring.weaknesses.push('Website needs technical improvements');
+        if (config.includeRecommendations) {
+          scoring.recommendations.push('Upgrade website with modern features and security');
+        }
+      }
+    }
+
+    // Technical Score (combination of various technical factors)
+    let technicalScore = 0;
+    let technicalFactors = 0;
+
+    if (websiteMetadata?.hasHttps) { technicalScore += 25; technicalFactors++; }
+    if (websiteMetadata?.contentType?.includes('text/html')) { technicalScore += 20; technicalFactors++; }
+    if (websiteMetadata?.technologies?.hasGoogleAnalytics) { technicalScore += 15; technicalFactors++; }
+    if (seoAnalysis?.technicalSeo?.hasTitle) { technicalScore += 20; technicalFactors++; }
+    if (seoAnalysis?.technicalSeo?.hasDescription) { technicalScore += 20; technicalFactors++; }
+
+    if (technicalFactors > 0) {
+      scoring.technicalScore = Math.min(technicalScore / technicalFactors * 5, 100);
+    }
+
+    scoring.factors.technical = {
+      score: scoring.technicalScore,
+      factorsChecked: technicalFactors,
+      hasHttps: websiteMetadata?.hasHttps || false,
+      hasAnalytics: websiteMetadata?.technologies?.hasGoogleAnalytics || false,
+      hasSeoBasics: !!(seoAnalysis?.technicalSeo?.hasTitle && seoAnalysis?.technicalSeo?.hasDescription)
+    };
+
+    // Calculate overall score
+    scoring.overallScore = Math.round(
+      (scoring.seoScore * weights.seo) +
+      (scoring.emailScore * weights.email) +
+      (scoring.websiteScore * weights.website) +
+      (scoring.technicalScore * weights.technical)
+    );
+
+    // Add overall assessment
+    if (scoring.overallScore >= 80) {
+      scoring.strengths.push('Excellent overall digital presence');
+    } else if (scoring.overallScore >= 60) {
+      scoring.strengths.push('Good digital foundation');
+    } else if (scoring.overallScore >= 40) {
+      scoring.weaknesses.push('Digital presence needs improvement');
+    } else {
+      scoring.weaknesses.push('Significant digital presence gaps');
+    }
+
+    // Generate final recommendations
+    if (config.includeRecommendations && scoring.overallScore < 70) {
+      scoring.recommendations.push('Focus on improving the lowest-scoring areas first');
+      
+      const scores = [
+        { name: 'SEO', score: scoring.seoScore },
+        { name: 'Email', score: scoring.emailScore },
+        { name: 'Website', score: scoring.websiteScore },
+        { name: 'Technical', score: scoring.technicalScore }
+      ];
+      
+      const lowest = scores.sort((a, b) => a.score - b.score)[0];
+      if (lowest.score < 50) {
+        scoring.recommendations.push(`Prioritize ${lowest.name.toLowerCase()} improvements for maximum impact`);
+      }
+    }
+
+    const outputs = {
+      scoring,
+      overallScore: scoring.overallScore,
+      strengths: scoring.strengths,
+      weaknesses: scoring.weaknesses,
+      recommendations: scoring.recommendations
+    };
+
+    context.logger?.info(`Business scoring completed`, { 
+      runId: context.runId, 
+      overallScore: scoring.overallScore,
+      strengths: scoring.strengths.length,
+      weaknesses: scoring.weaknesses.length
+    });
+
+    return {
+      updates: { businessScoring: scoring },
+      outputs
+    };
+  });
+}
+
+/**
+ * finalizeScan: Write final scan results to scanResults.scanData
+ * Aggregates all workflow data and saves it to the database
+ */
+const finalizeScanSchema = z.object({
+  includeRawData: z.boolean().optional().default(false),
+  status: z.enum(['completed', 'partial', 'failed']).optional().default('completed')
+});
+
+async function finalizeScanStep(context: StepContext, config: z.infer<typeof finalizeScanSchema>): Promise<StepResult> {
+  return safeExecute(context, 'finalizeScan', async () => {
+    context.logger?.info(`Finalizing scan results`, { runId: context.runId });
+
+    if (!context.scanId) {
+      throw new Error('No scan ID available for finalizing results');
+    }
+
+    // Aggregate all collected data
+    const scanResults = {
+      status: config.status,
+      completedAt: new Date().toISOString(),
+      runId: context.runId,
+      
+      // Core business information
+      businessInfo: {
+        name: context.data.businessName,
+        website: context.data.websiteMetadata?.finalUrl || context.data.websiteUrl,
+        email: context.data.emailValidation?.recommendedEmail || context.data.email,
+        domain: context.data.websiteMetadata?.finalUrl?.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]
+      },
+
+      // SEO Analysis Summary
+      seo: {
+        score: context.data.seoAnalysis?.score || 0,
+        issues: context.data.seoAnalysis?.issues || [],
+        recommendations: context.data.seoAnalysis?.recommendations || [],
+        technicalSeo: context.data.seoAnalysis?.technicalSeo || {},
+        contentSeo: context.data.seoAnalysis?.contentSeo || {}
+      },
+
+      // Email Analysis Summary
+      email: {
+        validation: context.data.emailValidation?.summary || {},
+        enrichment: {
+          foundEmails: context.data.emailEnrichment?.foundEmails || [],
+          suggestedEmails: context.data.emailEnrichment?.suggestedEmails || []
+        },
+        recommendedEmail: context.data.emailValidation?.recommendedEmail
+      },
+
+      // Website Analysis Summary
+      website: {
+        metadata: {
+          title: context.data.websiteMetadata?.title,
+          description: context.data.websiteMetadata?.description,
+          statusCode: context.data.websiteMetadata?.statusCode,
+          hasHttps: context.data.websiteMetadata?.hasHttps,
+          technologies: context.data.websiteMetadata?.technologies || {}
+        },
+        contentLength: context.data.websiteMetadata?.contentLength
+      },
+
+      // Business Scoring
+      scoring: context.data.businessScoring || {
+        overallScore: 0,
+        seoScore: 0,
+        emailScore: 0,
+        websiteScore: 0,
+        technicalScore: 0
+      },
+
+      // Recommendations and insights
+      insights: {
+        strengths: context.data.businessScoring?.strengths || [],
+        weaknesses: context.data.businessScoring?.weaknesses || [],
+        recommendations: context.data.businessScoring?.recommendations || []
+      }
+    };
+
+    // Include raw data if requested
+    if (config.includeRawData) {
+      (scanResults as any).rawData = {
+        websiteContent: context.data.websiteContent,
+        fullSeoAnalysis: context.data.seoAnalysis,
+        fullEmailValidation: context.data.emailValidation,
+        fullEmailEnrichment: context.data.emailEnrichment,
+        allContextData: context.data
+      };
+    }
+
+    // Update scan result in database
+    try {
+      await context.storage.updateScanResult(context.scanId, {
+        scanData: JSON.stringify(scanResults),
+        status: config.status
+      });
+
+      context.logger?.info(`Scan results saved to database`, { 
+        runId: context.runId,
+        scanId: context.scanId,
+        overallScore: scanResults.scoring.overallScore
+      });
+    } catch (error) {
+      context.logger?.error(`Failed to save scan results to database`, { 
+        runId: context.runId,
+        scanId: context.scanId,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw new Error(`Failed to save scan results: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+
+    const outputs = {
+      scanResults,
+      scanId: context.scanId,
+      finalStatus: config.status,
+      savedAt: new Date().toISOString()
+    };
+
+    return {
+      updates: { 
+        finalScanResults: scanResults,
+        scanStatus: config.status,
+        completedAt: outputs.savedAt
+      },
+      outputs
+    };
+  });
+}
+
+/**
+ * noop: No-operation step for testing and placeholders
+ * Does nothing but can be useful for workflow testing and debugging
+ */
+const noopSchema = z.object({
+  message: z.string().optional().default('No operation performed'),
+  delay: z.number().min(0).max(5000).optional().default(0),
+  outputData: z.record(z.any()).optional().default({})
+});
+
+async function noopStep(context: StepContext, config: z.infer<typeof noopSchema>): Promise<StepResult> {
+  return safeExecute(context, 'noop', async () => {
+    context.logger?.info(`Noop step: ${config.message}`, { runId: context.runId });
+
+    // Add optional delay for testing timing
+    if (config.delay > 0) {
+      await new Promise(resolve => setTimeout(resolve, config.delay));
+    }
+
+    const outputs = {
+      message: config.message,
+      timestamp: new Date().toISOString(),
+      runId: context.runId,
+      ...config.outputData
+    };
+
+    return {
+      updates: { lastNoopStep: outputs },
+      outputs
+    };
+  });
+}
+
+// =================== STEP REGISTRY ===================
+
+/**
+ * Main step registry containing all available step types
+ * Maps step type strings to their definitions (schema + run function)
+ */
+export const stepRegistry: StepRegistry = {
+  fetchWebsite: {
+    configSchema: fetchWebsiteSchema,
+    run: fetchWebsiteStep,
+    description: 'Fetch website content and extract metadata for analysis'
+  },
+
+  seoScan: {
+    configSchema: seoScanSchema,
+    run: seoScanStep,
+    description: 'Perform comprehensive SEO analysis on website content'
+  },
+
+  emailEnrichment: {
+    configSchema: emailEnrichmentSchema,
+    run: emailEnrichmentStep,
+    description: 'Find and enrich business email information'
+  },
+
+  validateEmailDomain: {
+    configSchema: validateEmailDomainSchema,
+    run: validateEmailDomainStep,
+    description: 'Validate and classify email domains using domain filters'
+  },
+
+  scoreBusiness: {
+    configSchema: scoreBusinessSchema,
+    run: scoreBusinessStep,
+    description: 'Calculate comprehensive business score based on all collected data'
+  },
+
+  finalizeScan: {
+    configSchema: finalizeScanSchema,
+    run: finalizeScanStep,
+    description: 'Finalize and save complete scan results to database'
+  },
+
+  noop: {
+    configSchema: noopSchema,
+    run: noopStep,
+    description: 'No-operation step for testing and workflow placeholders'
+  }
+};
+
+/**
+ * Get a step definition by type
+ * @param stepType - The type of step to retrieve
+ * @returns The step definition or undefined if not found
+ */
+export function getStepDefinition(stepType: string): StepDefinition | undefined {
+  return stepRegistry[stepType];
+}
+
+/**
+ * Get all available step types
+ * @returns Array of all registered step type names
+ */
+export function getAvailableStepTypes(): string[] {
+  return Object.keys(stepRegistry);
+}
+
+/**
+ * Validate a step configuration against its schema
+ * @param stepType - The type of step
+ * @param config - The configuration to validate
+ * @returns Validation result with parsed config or error details
+ */
+export function validateStepConfig(stepType: string, config: any): { 
+  success: boolean; 
+  data?: any; 
+  error?: string; 
+} {
+  const definition = getStepDefinition(stepType);
+  if (!definition) {
+    return { success: false, error: `Unknown step type: ${stepType}` };
+  }
+
+  try {
+    const validatedConfig = definition.configSchema.parse(config);
+    return { success: true, data: validatedConfig };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Validation failed';
+    return { success: false, error: errorMessage };
+  }
+}
+
+/**
+ * Execute a step with the given context and configuration
+ * @param stepType - The type of step to execute
+ * @param context - The step execution context
+ * @param config - The step configuration
+ * @returns Promise resolving to step execution result
+ */
+export async function executeStep(
+  stepType: string, 
+  context: StepContext, 
+  config: any
+): Promise<StepResult> {
+  const definition = getStepDefinition(stepType);
+  if (!definition) {
+    throw new Error(`Unknown step type: ${stepType}`);
+  }
+
+  // Validate configuration
+  const validation = validateStepConfig(stepType, config);
+  if (!validation.success) {
+    throw new Error(`Invalid step configuration: ${validation.error}`);
+  }
+
+  // Execute the step
+  return await definition.run(context, validation.data);
+}
+
+/**
+ * Register a new step type in the registry
+ * @param stepType - The unique identifier for the step type
+ * @param definition - The step definition containing schema and run function
+ */
+export function registerStepType(stepType: string, definition: StepDefinition): void {
+  if (stepRegistry[stepType]) {
+    throw new Error(`Step type '${stepType}' is already registered`);
+  }
+  stepRegistry[stepType] = definition;
+}
+
+/**
+ * Check if a step type is registered
+ * @param stepType - The step type to check
+ * @returns True if the step type exists in the registry
+ */
+export function isStepTypeRegistered(stepType: string): boolean {
+  return stepType in stepRegistry;
+}
