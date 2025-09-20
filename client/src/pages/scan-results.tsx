@@ -2,7 +2,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import ResultsTable from "@/components/results-table";
-import { Satellite, ArrowLeft, Database } from "lucide-react";
+import { Satellite, ArrowLeft, Database, BarChart3 } from "lucide-react";
 
 export default function ScanResults() {
   return (
@@ -23,6 +23,12 @@ export default function ScanResults() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
+              <Link href="/performance">
+                <Button variant="outline" size="sm" data-testid="button-performance">
+                  <BarChart3 className="w-4 h-4 mr-2" />
+                  Performance
+                </Button>
+              </Link>
               <Link href="/">
                 <Button variant="outline" size="sm" data-testid="button-back-home">
                   <ArrowLeft className="w-4 h-4 mr-2" />

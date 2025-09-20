@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import ScanForm from "@/components/scan-form";
-import { Rocket, Satellite, Database, Shield, Activity, Settings } from "lucide-react";
+import { Rocket, Satellite, Database, Shield, Activity, Settings, BarChart3 } from "lucide-react";
 
 export default function Home() {
   return (
@@ -28,6 +28,12 @@ export default function Home() {
                 <Activity className="w-3 h-3 text-accent mr-1.5" />
                 Online
               </span>
+              <Link href="/performance">
+                <Button variant="outline" size="sm" data-testid="button-performance">
+                  <BarChart3 className="w-4 h-4 mr-2" />
+                  Performance
+                </Button>
+              </Link>
               <Link href="/workflows">
                 <Button variant="outline" size="sm" data-testid="button-workflow-admin">
                   <Settings className="w-4 h-4 mr-2" />
