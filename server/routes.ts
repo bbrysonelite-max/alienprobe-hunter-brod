@@ -39,7 +39,7 @@ const STRIPE_PAYMENT_LINK_URL = process.env.STRIPE_PAYMENT_LINK_URL;
 const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "4900"); // Default $49.00
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
-  apiVersion: "2025-08-27.basil", // Use latest API version
+  apiVersion: "2025-08-27.basil" as any, // Use valid API version
 }) : null;
 
 const paymentsEnabled = !!STRIPE_SECRET_KEY;
@@ -89,7 +89,7 @@ function validateJwtToken(token: string): AuthenticatedUser | null {
     const decoded = jwt.verify(token, jwtSecret) as any;
     
     // Validate token structure
-    if (!decoded.id || !decoded.role || !ROLE_PERMISSIONS[decoded.role]) {
+    if (!decoded.id || !decoded.role || !ROLE_PERMISSIONS[decoded.role as keyof typeof ROLE_PERMISSIONS]) {
       logger.warn('Invalid JWT token structure', { tokenPayload: decoded });
       return null;
     }
@@ -103,7 +103,7 @@ function validateJwtToken(token: string): AuthenticatedUser | null {
     return {
       id: decoded.id,
       role: decoded.role,
-      permissions: ROLE_PERMISSIONS[decoded.role] || [],
+      permissions: ROLE_PERMISSIONS[decoded.role as keyof typeof ROLE_PERMISSIONS] || [],
       issuedAt: decoded.iat || 0,
       expiresAt: decoded.exp
     };
@@ -1457,7 +1457,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Stripe webhook endpoint
+  // Note: Raw body middleware for webhook signature verification is handled in index.ts
   app.post("/api/stripe/webhook", async (req: Request, res: Response) => {
     try {
       if (!paymentsEnabled || !stripe) {
@@ -1512,10 +1512,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             break;
           }
 
-          // Check if this event has already been processed (idempotency)
+          // Check if this event has already been processed (enhanced idempotency)
           const existingEvents = await storage.getLeadEvents(leadId);
           const alreadyProcessed = existingEvents.some(e => 
-            e.eventType === 'payment_completed' && 
+            e.eventType === 'stripe_event_processed' && 
             e.details && 
             typeof e.details === 'object' &&
             'stripeEventId' in e.details &&
@@ -1553,6 +1553,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 status: 'converted'
               });
 
+              // Validate payment amount and currency (CRITICAL for revenue integrity)
+              const expectedAmount = FULL_SCAN_PRICE_AMOUNT; // $49.00 in cents
+              const expectedCurrency = 'usd';
+              
+              const isValidAmount = payment.amount === expectedAmount;
+              const isValidCurrency = payment.currency === expectedCurrency;
+              
+              if (!isValidAmount || !isValidCurrency) {
+                logger.error('CRITICAL: Payment validation failed - marking as fraud', new Error('Payment validation failed'), {
+                  paymentId: payment.id,
+                  expectedAmount,
+                  actualAmount: payment.amount,
+                  expectedCurrency,
+                  actualCurrency: payment.currency,
+                  sessionId: session.id,
+                  leadId
+                });
+                
+                // BLOCK conversion - mark as failed and do not count in revenue
+                await storage.updatePayment(payment.id, {
+                  status: 'failed'
+                });
+                
+                await storage.createLeadEvent({
+                  leadId: leadId,
+                  eventType: "payment_validation_failed",
+                  details: {
+                    paymentId: payment.id,
+                    sessionId: session.id,
+                    expectedAmount,
+                    actualAmount: payment.amount,
+                    expectedCurrency,
+                    actualCurrency: payment.currency,
+                    reason: 'Amount or currency validation failed - potential fraud',
+                    stripeEventId: event.id,
+                    failedAt: new Date().toISOString()
+                  }
+                });
+                
+                // Do not proceed with conversion
+                logger.warn('Skipping lead conversion due to payment validation failure');
+                break;
+              }
+              
+              // Log stripe event processing for idempotency (prevents double-counting)
+              await storage.createLeadEvent({
+                leadId: leadId,
+                eventType: "stripe_event_processed",
+                details: {
+                  stripeEventId: event.id,
+                  eventType: event.type,
+                  sessionId: session.id,
+                  processedAt: new Date().toISOString()
+                }
+              });
+              
               // Log conversion event with event ID for idempotency
               await storage.createLeadEvent({
                 leadId: leadId,
@@ -1562,6 +1618,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   sessionId: session.id,
                   scanId: scanId || null,
                   amount: payment.amount,
+                  currency: payment.currency || 'usd',
+                  expectedAmount: expectedAmount,
                   stripeEventId: event.id, // Store event ID for idempotency
                   convertedAt: new Date().toISOString()
                 }
@@ -1606,7 +1664,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
             await storage.updatePayment(payment.id, {
               status: 'paid'
             });
+            
+            logger.info('Payment status updated to paid via payment_intent.succeeded', {
+              paymentId: payment.id,
+              paymentIntentId: paymentIntent.id,
+              amount: paymentIntent.amount
+            });
           }
+          break;
+        }
+
+        case 'payment_intent.payment_failed': {
+          const paymentIntent = event.data.object as Stripe.PaymentIntent;
+          
+          logger.warn('Payment intent failed', { 
+            paymentIntentId: paymentIntent.id,
+            amount: paymentIntent.amount,
+            failureCode: paymentIntent.last_payment_error?.code,
+            failureMessage: paymentIntent.last_payment_error?.message
+          });
+
+          // Update payment status if we find it by payment intent ID
+          const payment = await storage.getPaymentByStripePaymentIntentId(paymentIntent.id);
+          if (payment) {
+            await storage.updatePayment(payment.id, {
+              status: 'failed'
+            });
+            
+            // Log payment failure for analytics
+            logger.info('Payment status updated to failed via payment_intent.payment_failed', {
+              paymentId: payment.id,
+              paymentIntentId: paymentIntent.id,
+              failureCode: paymentIntent.last_payment_error?.code
+            });
+          }
+          break;
+        }
+
+        case 'invoice.payment_succeeded':
+        case 'invoice.payment_failed': {
+          // Handle subscription payments for future subscription features
+          const invoice = event.data.object as Stripe.Invoice;
+          
+          logger.info('Invoice payment event received', {
+            eventType: event.type,
+            invoiceId: invoice.id,
+            amount: invoice.amount_paid,
+            subscriptionId: (invoice as any).subscription
+          });
+          
+          // Future enhancement: Handle subscription payments
           break;
         }
 
@@ -1616,7 +1723,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
       }
 
-      res.json({ success: true, received: true });
+      // Send success response immediately for Stripe
+      res.json({ success: true, received: true, eventType: event.type, eventId: event.id });
     } catch (error) {
       logger.error('Stripe webhook processing failed', error as Error);
       res.status(500).json({ 
