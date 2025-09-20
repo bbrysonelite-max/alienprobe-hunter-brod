@@ -16,6 +16,10 @@ import {
   scanResults,
   emailLog,
   emailQueue,
+  leads,
+  businessTools,
+  toolCategories,
+  toolRecommendations,
   type Workflow,
   type WorkflowVersion,
   type WorkflowRun,
@@ -33,6 +37,7 @@ import { createHash, timingSafeEqual } from "crypto";
 import jwt from "jsonwebtoken";
 import { discoveryEngine } from "./prospecting/discovery-engine";
 import { hunterScheduler } from "./prospecting/hunter-scheduler";
+import { recommendationEngine } from "./recommendations/recommendation-engine";
 
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -3037,6 +3042,191 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({
         success: false,
         error: "Failed to toggle prospecting job"
+      });
+    }
+  });
+
+  // Generate tool recommendations for a business (scan integration)
+  app.post("/api/recommendations/generate", async (req: Request, res: Response) => {
+    try {
+      const { leadId, scanId, context = 'scan_results' } = req.body;
+      
+      if (!leadId) {
+        return res.status(400).json({
+          success: false,
+          error: "Lead ID is required"
+        });
+      }
+
+      logger.info('🎯 Generating business tool recommendations', { leadId, scanId, context });
+
+      const recommendations = await recommendationEngine.generateRecommendations(leadId, scanId, context);
+
+      res.json({
+        success: true,
+        data: {
+          leadId,
+          scanId,
+          recommendations: recommendations.map(rec => ({
+            tool: {
+              id: rec.tool.id,
+              name: rec.tool.name,
+              description: rec.tool.description,
+              shortDescription: rec.tool.shortDescription,
+              website: rec.tool.website,
+              pricing: rec.tool.pricing,
+              features: rec.tool.features,
+              rating: rec.tool.rating,
+              tags: rec.tool.tags
+            },
+            score: rec.score,
+            reasons: rec.reasons,
+            category: rec.category,
+            position: recommendations.indexOf(rec) + 1
+          })),
+          totalRecommendations: recommendations.length,
+          context,
+          generatedAt: new Date().toISOString()
+        }
+      });
+
+    } catch (error) {
+      logger.error('Failed to generate recommendations', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to generate tool recommendations"
+      });
+    }
+  });
+
+  // DEMO: Complete AlienProbe.ai pipeline test (Lead → Scan → Recommendations)
+  app.post("/api/demo/complete-pipeline", async (req: Request, res: Response) => {
+    try {
+      const { industry = 'restaurant', location = 'New York, NY', businessName } = req.body;
+
+      logger.info('🚀 DEMO: Running complete AlienProbe.ai pipeline', { industry, location, businessName });
+
+      // Step 1: Discover/Create Lead
+      let leadData;
+      if (businessName) {
+        // Use provided business
+        leadData = {
+          businessName,
+          industry,
+          companySize: '1-10',
+          budgetRange: '5k-25k',
+          painPoints: 'Need better customer management and online presence',
+          source: 'demo_pipeline'
+        };
+      } else {
+        // Discover new businesses
+        const discovery = await discoveryEngine.discoverBusinesses({
+          industry,
+          location,
+          keywords: `${industry} business`,
+          minRating: 3.5
+        }, 1);
+
+        if (discovery.businesses.length === 0) {
+          throw new Error('No businesses discovered for pipeline demo');
+        }
+
+        const business = discovery.businesses[0];
+        leadData = {
+          businessName: business.name,
+          website: business.website,
+          industry: business.industry || industry,
+          companySize: '1-10',
+          budgetRange: '5k-25k',
+          painPoints: `Needs optimization for ${business.industry || industry} operations`,
+          source: 'discovery_engine'
+        };
+      }
+
+      // Step 2: Create Lead
+      const [lead] = await db.insert(leads).values(leadData).returning();
+
+      // Step 3: Generate Business Scan
+      const scanData = {
+        overview: `${leadData.businessName} is a ${leadData.industry} business that could benefit from AI optimization`,
+        challenges: ['Customer retention', 'Operational efficiency', 'Digital presence'],
+        opportunities: ['Automation potential', 'Customer experience enhancement', 'Revenue optimization'],
+        recommendations: 'Consider implementing CRM, scheduling, and marketing automation tools',
+        aiReadinessScore: Math.floor(Math.random() * 40) + 60, // 60-100% ready
+        detectedTools: ['Basic POS', 'Email'],
+        painPointAnalysis: leadData.painPoints
+      };
+
+      const [scanResult] = await db.insert(scanResults).values({
+        businessName: leadData.businessName,
+        website: leadData.website,
+        leadId: lead.id,
+        scanData: JSON.stringify(scanData),
+        status: 'completed'
+      }).returning();
+
+      // Step 4: Generate Tool Recommendations
+      const recommendations = await recommendationEngine.generateRecommendations(lead.id, scanResult.id, 'demo_pipeline');
+
+      res.json({
+        success: true,
+        demo: true,
+        pipeline: {
+          step1_discovery: {
+            businessName: leadData.businessName,
+            industry: leadData.industry,
+            location: location
+          },
+          step2_lead_creation: {
+            leadId: lead.id,
+            status: 'created'
+          },
+          step3_business_scan: {
+            scanId: scanResult.id,
+            aiReadinessScore: scanData.aiReadinessScore,
+            challenges: scanData.challenges,
+            opportunities: scanData.opportunities
+          },
+          step4_tool_recommendations: {
+            totalRecommendations: recommendations.length,
+            topRecommendation: recommendations[0]?.tool.name,
+            estimatedRevenue: recommendations.reduce((sum, rec) => {
+              const pricing = rec.tool.pricing;
+              const avgPrice = (pricing.minPrice + pricing.maxPrice) / 2;
+              const commission = rec.tool.commissionRate || 15;
+              return sum + (avgPrice * commission / 100);
+            }, 0).toFixed(2),
+            recommendations: recommendations.slice(0, 3).map(rec => ({
+              name: rec.tool.name,
+              score: rec.score,
+              reasons: rec.reasons,
+              pricing: rec.tool.pricing,
+              commission: rec.tool.commissionRate
+            }))
+          }
+        },
+        revenuePotential: {
+          scanPrice: 49.99,
+          toolCommissions: recommendations.reduce((sum, rec) => {
+            const pricing = rec.tool.pricing;
+            const avgPrice = (pricing.minPrice + pricing.maxPrice) / 2;
+            const commission = rec.tool.commissionRate || 15;
+            return sum + (avgPrice * commission / 100);
+          }, 0),
+          totalPerBusiness: 49.99 + recommendations.reduce((sum, rec) => {
+            const pricing = rec.tool.pricing;
+            const avgPrice = (pricing.minPrice + pricing.maxPrice) / 2;
+            const commission = rec.tool.commissionRate || 15;
+            return sum + (avgPrice * commission / 100);
+          }, 0)
+        }
+      });
+
+    } catch (error) {
+      logger.error('Complete pipeline demo failed', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to run complete pipeline demo"
       });
     }
   });

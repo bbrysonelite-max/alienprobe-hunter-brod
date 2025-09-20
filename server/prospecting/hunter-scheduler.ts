@@ -162,7 +162,7 @@ export class HunterScheduler {
   private getDueJobs(now: Date): HuntingJob[] {
     const dueJobs: HuntingJob[] = [];
 
-    for (const job of this.jobs.values()) {
+    for (const job of Array.from(this.jobs.values())) {
       if (!job.enabled) continue;
 
       if (this.isJobDue(job, now)) {
@@ -244,9 +244,8 @@ export class HunterScheduler {
     } catch (error) {
       job.failedRuns++;
       
-      logger.error(`❌ Hunting job failed: ${job.name}`, {
+      logger.error(`❌ Hunting job failed: ${job.name}`, error as Error, {
         jobId: job.id,
-        error: error.message,
         duration: Date.now() - startTime.getTime()
       });
     }
