@@ -20,7 +20,8 @@ interface ChatMessage {
   id: string;
   content: string;
   role: 'user' | 'assistant';
-  timestamp: Date;
+  timestamp?: Date;
+  createdAt?: string;
 }
 
 interface ChatWidgetProps {
@@ -41,6 +42,8 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
   const [isMinimized, setIsMinimized] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState("");
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -53,17 +56,48 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
 
   const chatEnabled = chatStatus?.chatEnabled ?? false;
 
+  // Load conversation history
+  const loadConversationHistory = async (convId: string) => {
+    try {
+      setIsLoadingHistory(true);
+      const response = await apiRequest("GET", `/api/chat/history/${convId}`);
+      const data = await response.json();
+      
+      if (data.success && data.messages) {
+        const formattedMessages = data.messages.map((msg: any) => ({
+          id: msg.id,
+          content: msg.content,
+          role: msg.role,
+          createdAt: msg.createdAt
+        }));
+        setMessages(formattedMessages);
+      }
+    } catch (error) {
+      console.warn('Failed to load conversation history:', error);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
   // Send message mutation
   const sendMessageMutation = useMutation({
     mutationFn: async (message: string) => {
       const response = await apiRequest("POST", "/api/chat", {
         message,
-        context
+        context,
+        conversationId
       });
       return response.json();
     },
     onSuccess: (data) => {
       if (data.success) {
+        // Update conversation ID if received from server
+        if (data.conversationId && !conversationId) {
+          setConversationId(data.conversationId);
+          // Store in localStorage for persistence across browser sessions
+          localStorage.setItem('chatConversationId', data.conversationId);
+        }
+        
         const assistantMessage: ChatMessage = {
           id: `msg-${Date.now()}-assistant`,
           content: data.response,
@@ -114,18 +148,27 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Add welcome message when chat opens
+  // Load existing conversation or initialize new one when chat opens
   useEffect(() => {
-    if (isOpen && messages.length === 0 && chatEnabled) {
-      const welcomeMessage: ChatMessage = {
-        id: 'welcome-msg',
-        content: `Hello! I'm your AlianProbe.ai AI assistant. I'm here to help you understand your business analysis and provide strategic insights. ${context?.businessName ? `I can see you're working with "${context.businessName}". ` : ''}How can I assist you today?`,
-        role: 'assistant',
-        timestamp: new Date()
-      };
-      setMessages([welcomeMessage]);
+    if (isOpen && chatEnabled) {
+      // Try to get existing conversation ID from localStorage
+      const storedConversationId = localStorage.getItem('chatConversationId');
+      
+      if (storedConversationId && !conversationId) {
+        setConversationId(storedConversationId);
+        loadConversationHistory(storedConversationId);
+      } else if (messages.length === 0) {
+        // Show welcome message if no conversation history
+        const welcomeMessage: ChatMessage = {
+          id: 'welcome-msg',
+          content: `Hello! I'm your AlianProbe.ai AI assistant. I'm here to help you understand your business analysis and provide strategic insights. ${context?.businessName ? `I can see you're working with "${context.businessName}". ` : ''}How can I assist you today?`,
+          role: 'assistant',
+          timestamp: new Date()
+        };
+        setMessages([welcomeMessage]);
+      }
     }
-  }, [isOpen, chatEnabled, context?.businessName, messages.length]);
+  }, [isOpen, chatEnabled, context?.businessName]);
 
   if (!isOpen) {
     return (
@@ -195,6 +238,12 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
           <CardContent className="p-0 flex flex-col h-80">
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
+              {isLoadingHistory && (
+                <div className="text-center p-4">
+                  <Loader2 className="h-4 w-4 animate-spin mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">Loading conversation history...</p>
+                </div>
+              )}
               {!chatEnabled && (
                 <div className="text-center p-4">
                   <Badge variant="outline" className="mb-2">

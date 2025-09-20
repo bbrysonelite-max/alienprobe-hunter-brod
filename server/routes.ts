@@ -1286,7 +1286,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             leadId: context?.leadId || null,
             role: "assistant",
             content: chatResponse.response,
-            metadata: { context, tokens: chatResponse.tokens }
+            metadata: { context }
           });
         } catch (dbError) {
           logger.warn('Failed to save assistant response to database', dbError as Error);
