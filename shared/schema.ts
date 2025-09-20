@@ -34,6 +34,8 @@ export const leads = pgTable("leads", {
   painPoints: text("pain_points"),
   emailDomain: text("email_domain"),
   status: text("status").notNull().default("pending"), // pending/verified/flagged/converted/disqualified
+  source: text("source").notNull().default("manual"), // manual, google_places, yelp, serp_api, etc.
+  discoveryResultId: varchar("discovery_result_id").references(() => discoveryResults.id), // link to discovery if auto-generated
   isPersonalEmail: boolean("is_personal_email").default(false),
   isDisposable: boolean("is_disposable").default(false),
   recaptchaScore: real("recaptcha_score"),
@@ -102,6 +104,102 @@ export const chatMessages = pgTable("chat_messages", {
   role: text("role").notNull(), // user/assistant/system
   content: text("content").notNull(),
   metadata: json("metadata"), // store context, tokens used, etc.
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ===== PROSPECTING TABLES (Hunter Brody Lead Generation Engine) =====
+
+export const leadSources = pgTable("lead_sources", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  key: text("key").notNull().unique(), // google_places, yelp, serp_api, etc.
+  name: text("name").notNull(),
+  type: text("type").notNull(), // api, scraper, directory
+  config: jsonb("config").notNull(), // API keys, search params, etc.
+  enabled: boolean("enabled").default(true),
+  dailyQuota: integer("daily_quota").default(1000),
+  dailyUsed: integer("daily_used").default(0),
+  lastResetAt: timestamp("last_reset_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const discoveryJobs = pgTable("discovery_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sourceId: varchar("source_id").notNull().references(() => leadSources.id),
+  name: text("name").notNull(),
+  searchParams: jsonb("search_params").notNull(), // industry, location, keywords, etc.
+  schedule: text("schedule"), // cron-like: daily, weekly, etc.
+  enabled: boolean("enabled").default(true),
+  lastRunAt: timestamp("last_run_at"),
+  nextRunAt: timestamp("next_run_at"),
+  status: text("status").notNull().default("pending"), // pending, running, completed, failed
+  resultsCount: integer("results_count").default(0),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const discoveryResults = pgTable("discovery_results", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: varchar("job_id").notNull().references(() => discoveryJobs.id),
+  sourceRef: text("source_ref").notNull(), // external ID from API
+  rawData: jsonb("raw_data").notNull(), // full API response
+  businessName: text("business_name").notNull(),
+  website: text("website"),
+  address: text("address"),
+  phone: text("phone"),
+  industry: text("industry"),
+  rating: real("rating"),
+  reviewCount: integer("review_count"),
+  dedupKey: text("dedup_key").notNull(), // domain or normalized name for deduplication
+  leadId: varchar("lead_id").references(() => leads.id), // created lead if processed
+  processed: boolean("processed").default(false),
+  discarded: boolean("discarded").default(false), // filtered out by ICP rules
+  discardReason: text("discard_reason"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    dedupIndex: index("discovery_results_dedup_idx").on(table.dedupKey),
+    jobIndex: index("discovery_results_job_idx").on(table.jobId),
+  };
+});
+
+export const prospectContacts = pgTable("prospect_contacts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  leadId: varchar("lead_id").notNull().references(() => leads.id),
+  discoveryResultId: varchar("discovery_result_id").references(() => discoveryResults.id),
+  type: text("type").notNull(), // email, phone, linkedin, etc.
+  value: text("value").notNull(), // actual contact info
+  role: text("role"), // owner, manager, contact, etc.
+  verified: boolean("verified").default(false),
+  verifiedAt: timestamp("verified_at"),
+  confidence: real("confidence"), // 0-1 confidence score
+  source: text("source"), // website, api, enrichment
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    leadContactIndex: index("prospect_contacts_lead_idx").on(table.leadId),
+    typeValueIndex: index("prospect_contacts_type_value_idx").on(table.type, table.value),
+  };
+});
+
+export const suppressionList = pgTable("suppression_list", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: text("type").notNull(), // email, domain, phone
+  value: text("value").notNull(),
+  reason: text("reason").notNull(), // unsubscribe, bounce, complaint, manual
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    typeValueIndex: unique("suppression_type_value_unique").on(table.type, table.value),
+  };
+});
+
+export const icpRules = pgTable("icp_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  conditions: jsonb("conditions").notNull(), // filtering logic
+  action: text("action").notNull(), // include, exclude, score
+  priority: integer("priority").default(0),
+  enabled: boolean("enabled").default(true),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -352,6 +450,28 @@ export type InsertWorkflowRun = z.infer<typeof insertWorkflowRunSchema>;
 export type WorkflowRun = typeof workflowRuns.$inferSelect;
 export type InsertWorkflowRunStep = z.infer<typeof insertWorkflowRunStepSchema>;
 export type WorkflowRunStep = typeof workflowRunSteps.$inferSelect;
+
+// ============= PROSPECTING SCHEMAS & TYPES =============
+
+export const insertLeadSourceSchema = createInsertSchema(leadSources);
+export const insertDiscoveryJobSchema = createInsertSchema(discoveryJobs);
+export const insertDiscoveryResultSchema = createInsertSchema(discoveryResults);
+export const insertProspectContactSchema = createInsertSchema(prospectContacts);
+export const insertSuppressionListSchema = createInsertSchema(suppressionList);
+export const insertIcpRuleSchema = createInsertSchema(icpRules);
+
+export type InsertLeadSource = z.infer<typeof insertLeadSourceSchema>;
+export type LeadSource = typeof leadSources.$inferSelect;
+export type InsertDiscoveryJob = z.infer<typeof insertDiscoveryJobSchema>;
+export type DiscoveryJob = typeof discoveryJobs.$inferSelect;
+export type InsertDiscoveryResult = z.infer<typeof insertDiscoveryResultSchema>;
+export type DiscoveryResult = typeof discoveryResults.$inferSelect;
+export type InsertProspectContact = z.infer<typeof insertProspectContactSchema>;
+export type ProspectContact = typeof prospectContacts.$inferSelect;
+export type InsertSuppressionList = z.infer<typeof insertSuppressionListSchema>;
+export type SuppressionList = typeof suppressionList.$inferSelect;
+export type InsertIcpRule = z.infer<typeof insertIcpRuleSchema>;
+export type IcpRule = typeof icpRules.$inferSelect;
 
 // =================== WORKFLOW DEFINITION INTERFACES ===================
 

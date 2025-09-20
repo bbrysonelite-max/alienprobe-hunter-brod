@@ -31,6 +31,8 @@ import { processChatMessage, isChatEnabled } from "./chat";
 import { WorkflowExecutor } from "./workflows/executor";
 import { createHash, timingSafeEqual } from "crypto";
 import jwt from "jsonwebtoken";
+import { discoveryEngine } from "./prospecting/discovery-engine";
+import { hunterScheduler } from "./prospecting/hunter-scheduler";
 
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -2868,6 +2870,147 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({
         success: false,
         error: "Failed to compute daily analytics"
+      });
+    }
+  });
+
+  // ===== HUNTER BRODY PROSPECTING APIs =====
+
+  // Start Hunter Brody autonomous prospecting
+  app.post("/api/prospecting/start", async (req: Request, res: Response) => {
+    try {
+      hunterScheduler.start();
+      
+      logger.info('🚀 Hunter Brody autonomous prospecting started');
+      
+      res.json({
+        success: true,
+        message: "Hunter Brody autonomous prospecting started",
+        status: "hunting"
+      });
+    } catch (error) {
+      logger.error('Failed to start Hunter Brody', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to start autonomous prospecting"
+      });
+    }
+  });
+
+  // Stop Hunter Brody autonomous prospecting  
+  app.post("/api/prospecting/stop", async (req: Request, res: Response) => {
+    try {
+      hunterScheduler.stop();
+      
+      logger.info('🛑 Hunter Brody autonomous prospecting stopped');
+      
+      res.json({
+        success: true,
+        message: "Hunter Brody autonomous prospecting stopped",
+        status: "stopped"
+      });
+    } catch (error) {
+      logger.error('Failed to stop Hunter Brody', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to stop autonomous prospecting"
+      });
+    }
+  });
+
+  // Get Hunter Brody status and statistics
+  app.get("/api/prospecting/status", async (req: Request, res: Response) => {
+    try {
+      const stats = hunterScheduler.getStats();
+      const jobs = hunterScheduler.getAllJobs();
+      
+      res.json({
+        success: true,
+        data: {
+          isRunning: hunterScheduler['isRunning'] || false,
+          stats,
+          activeJobs: jobs.filter(j => j.enabled),
+          allJobs: jobs,
+          quotaStatus: discoveryEngine.getQuotaStatus()
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to get Hunter Brody status', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to get prospecting status"
+      });
+    }
+  });
+
+  // Manual business discovery (for testing)
+  app.post("/api/prospecting/discover", async (req: Request, res: Response) => {
+    try {
+      const { industry, location, keywords, maxResults = 10 } = req.body;
+
+      const searchParams = {
+        industry,
+        location,  
+        keywords,
+        minRating: 3.5
+      };
+
+      logger.info('🔍 Manual business discovery requested', { searchParams, maxResults });
+
+      const result = await discoveryEngine.discoverBusinesses(searchParams, maxResults);
+
+      res.json({
+        success: true,
+        data: result
+      });
+    } catch (error) {
+      logger.error('Manual discovery failed', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to discover businesses"
+      });
+    }
+  });
+
+  // Get prospecting jobs
+  app.get("/api/prospecting/jobs", async (req: Request, res: Response) => {
+    try {
+      const jobs = hunterScheduler.getAllJobs();
+      
+      res.json({
+        success: true,
+        data: jobs
+      });
+    } catch (error) {
+      logger.error('Failed to get prospecting jobs', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to get prospecting jobs"
+      });
+    }
+  });
+
+  // Toggle prospecting job
+  app.post("/api/prospecting/jobs/:jobId/toggle", async (req: Request, res: Response) => {
+    try {
+      const { jobId } = req.params;
+      const { enabled } = req.body;
+
+      hunterScheduler.toggleJob(jobId, enabled);
+
+      logger.info(`🔄 Job ${enabled ? 'enabled' : 'disabled'}`, { jobId });
+
+      res.json({
+        success: true,
+        message: `Job ${enabled ? 'enabled' : 'disabled'}`,
+        jobId,
+        enabled
+      });
+    } catch (error) {
+      logger.error('Failed to toggle prospecting job', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to toggle prospecting job"
       });
     }
   });
