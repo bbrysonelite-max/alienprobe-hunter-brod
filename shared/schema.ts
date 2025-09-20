@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, boolean, real, json } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, boolean, real, json, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -104,6 +104,50 @@ export const chatMessages = pgTable("chat_messages", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const workflows = pgTable("workflows", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  businessType: text("business_type"),
+  isDefault: boolean("is_default").default(false),
+  activeVersionId: varchar("active_version_id").references(() => workflowVersions.id),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const workflowVersions = pgTable("workflow_versions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  workflowId: varchar("workflow_id").notNull().references(() => workflows.id),
+  version: integer("version").notNull(),
+  status: text("status").notNull().default("draft"), // draft/published
+  definition: jsonb("definition").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const workflowRuns = pgTable("workflow_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  workflowVersionId: varchar("workflow_version_id").notNull().references(() => workflowVersions.id),
+  scanId: varchar("scan_id").references(() => scanResults.id),
+  leadId: varchar("lead_id").references(() => leads.id),
+  status: text("status").notNull().default("queued"), // queued/running/succeeded/failed
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+  context: jsonb("context"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const workflowRunSteps = pgTable("workflow_run_steps", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  runId: varchar("run_id").notNull().references(() => workflowRuns.id),
+  stepKey: text("step_key").notNull(),
+  type: text("type").notNull(),
+  status: text("status").notNull(),
+  input: jsonb("input"),
+  output: jsonb("output"),
+  error: text("error"),
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+  attempt: integer("attempt").notNull().default(1),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -203,6 +247,54 @@ export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({
   metadata: z.any().optional(),
 });
 
+export const insertWorkflowSchema = createInsertSchema(workflows).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  name: z.string().min(1, "Workflow name is required"),
+  businessType: z.string().optional(),
+  isDefault: z.boolean().optional(),
+  activeVersionId: z.string().optional(),
+});
+
+export const insertWorkflowVersionSchema = createInsertSchema(workflowVersions).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  workflowId: z.string().min(1, "Workflow ID is required"),
+  version: z.number().int().positive("Version must be a positive integer"),
+  status: z.enum(["draft", "published"]).optional(),
+  definition: z.any(), // JSON definition
+});
+
+export const insertWorkflowRunSchema = createInsertSchema(workflowRuns).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  workflowVersionId: z.string().min(1, "Workflow version ID is required"),
+  scanId: z.string().optional(),
+  leadId: z.string().optional(),
+  status: z.enum(["queued", "running", "succeeded", "failed"]).optional(),
+  startedAt: z.date().optional(),
+  finishedAt: z.date().optional(),
+  context: z.any().optional(), // JSON context
+});
+
+export const insertWorkflowRunStepSchema = createInsertSchema(workflowRunSteps).omit({
+  id: true,
+}).extend({
+  runId: z.string().min(1, "Run ID is required"),
+  stepKey: z.string().min(1, "Step key is required"),
+  type: z.string().min(1, "Step type is required"),
+  status: z.string().min(1, "Step status is required"),
+  input: z.any().optional(), // JSON input
+  output: z.any().optional(), // JSON output
+  error: z.string().optional(),
+  startedAt: z.date().optional(),
+  finishedAt: z.date().optional(),
+  attempt: z.number().int().positive("Attempt must be a positive integer").optional(),
+});
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type InsertScanResult = z.infer<typeof insertScanResultSchema>;
@@ -221,3 +313,11 @@ export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type ChatMessage = typeof chatMessages.$inferSelect;
+export type InsertWorkflow = z.infer<typeof insertWorkflowSchema>;
+export type Workflow = typeof workflows.$inferSelect;
+export type InsertWorkflowVersion = z.infer<typeof insertWorkflowVersionSchema>;
+export type WorkflowVersion = typeof workflowVersions.$inferSelect;
+export type InsertWorkflowRun = z.infer<typeof insertWorkflowRunSchema>;
+export type WorkflowRun = typeof workflowRuns.$inferSelect;
+export type InsertWorkflowRunStep = z.infer<typeof insertWorkflowRunStepSchema>;
+export type WorkflowRunStep = typeof workflowRunSteps.$inferSelect;
