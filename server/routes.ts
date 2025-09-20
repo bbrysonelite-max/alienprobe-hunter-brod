@@ -10,6 +10,7 @@ import {
   insertWorkflowVersionSchema,
   insertWorkflowRunSchema,
   insertWorkflowRunStepSchema,
+  workflowDefinitionSchema,
   type Workflow,
   type WorkflowVersion,
   type WorkflowRun,
@@ -1953,6 +1954,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const validatedData = insertWorkflowVersionSchema.omit({ workflowId: true }).parse(req.body);
       
+      // Validate workflow definition structure if provided
+      if (validatedData.definition) {
+        try {
+          workflowDefinitionSchema.parse(validatedData.definition);
+        } catch (definitionError) {
+          logger.warn('Workflow definition validation failed', { 
+            workflowId: id,
+            errors: definitionError instanceof z.ZodError ? definitionError.errors : [definitionError]
+          });
+          res.status(400).json({
+            success: false,
+            error: "Workflow definition validation failed",
+            details: definitionError instanceof z.ZodError ? definitionError.errors : [{ message: String(definitionError) }]
+          });
+          return;
+        }
+      }
+      
       logger.info('Creating new workflow version', { workflowId: id });
 
       const workflow = await storage.getWorkflow(id);
@@ -2010,6 +2029,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { id } = req.params;
       const validatedData = updateWorkflowVersionSchema.parse(req.body);
+      
+      // Validate workflow definition structure if provided
+      if (validatedData.definition) {
+        try {
+          workflowDefinitionSchema.parse(validatedData.definition);
+        } catch (definitionError) {
+          logger.warn('Workflow definition validation failed', { 
+            versionId: id,
+            errors: definitionError instanceof z.ZodError ? definitionError.errors : [definitionError]
+          });
+          res.status(400).json({
+            success: false,
+            error: "Workflow definition validation failed",
+            details: definitionError instanceof z.ZodError ? definitionError.errors : [{ message: String(definitionError) }]
+          });
+          return;
+        }
+      }
       
       logger.info('Updating workflow version', { versionId: id, updates: Object.keys(validatedData) });
 
@@ -2078,6 +2115,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.status(400).json({
           success: false,
           error: "Version is already published"
+        });
+        return;
+      }
+
+      // Validate workflow definition before publishing
+      if (version.definition) {
+        try {
+          workflowDefinitionSchema.parse(version.definition);
+        } catch (definitionError) {
+          logger.warn('Workflow definition validation failed during publish', { 
+            versionId: id,
+            errors: definitionError instanceof z.ZodError ? definitionError.errors : [definitionError]
+          });
+          res.status(400).json({
+            success: false,
+            error: "Cannot publish workflow version - definition validation failed",
+            details: definitionError instanceof z.ZodError ? definitionError.errors : [{ message: String(definitionError) }]
+          });
+          return;
+        }
+      } else {
+        res.status(400).json({
+          success: false,
+          error: "Cannot publish workflow version - no definition found"
         });
         return;
       }

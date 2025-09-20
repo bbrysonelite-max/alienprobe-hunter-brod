@@ -644,7 +644,7 @@ export class WorkflowExecutor {
         }
 
         stepPromises.push(
-          this.executeStep(step, context)
+          this.executeStep(step, context, definition)
             .then(result => ({ stepKey, success: result.success }))
             .catch(error => {
               logger.error('Step execution failed', error instanceof Error ? error : undefined, {
@@ -823,7 +823,8 @@ export class WorkflowExecutor {
    */
   private async executeStep(
     step: WorkflowStepConfig,
-    context: WorkflowExecutionContext
+    context: WorkflowExecutionContext,
+    workflowDefinition: WorkflowDefinition
   ): Promise<StepExecutionResult> {
     const maxAttempts = 3;
     let attempt = 1;
@@ -872,12 +873,15 @@ export class WorkflowExecutor {
           );
         }
 
-        // Create step context
+        // Create step context with workflow definition
         const stepContext: StepContext = {
           runId: context.runId,
           scanId: context.scanId,
           leadId: context.leadId,
-          data: { ...context.data },
+          data: { 
+            ...context.data,
+            workflowDefinition: workflowDefinition
+          },
           storage: this.storage,
           logger: logger
         };

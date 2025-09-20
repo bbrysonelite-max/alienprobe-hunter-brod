@@ -2,6 +2,8 @@ import { z } from "zod";
 import { classifyEmailDomain, shouldFlagLead, getFlaggingReason } from "../utils/emailDomainFilter";
 import { URL } from "url";
 import { createHash } from "crypto";
+import { executeTool } from "./toolRegistry";
+import type { ToolTemplate } from "@shared/schema";
 
 // Strong typing for workflow context data structure
 export interface WorkflowContextData {
@@ -139,7 +141,7 @@ async function safeExecute<T>(
 /**
  * URL Security Validator - Prevents SSRF attacks
  */
-class URLSecurityValidator {
+export class URLSecurityValidator {
   private static readonly PRIVATE_IP_RANGES = [
     /^10\./,
     /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
@@ -1203,6 +1205,174 @@ async function finalizeScanStep(context: StepContext, config: z.infer<typeof fin
 }
 
 /**
+ * toolCall: Generic tool execution step using tool templates
+ * Executes external tools by templateKey with safe interpolation and security validation
+ */
+const toolCallSchema = z.object({
+  templateKey: z.string().min(1, "Template key is required"),
+  overrides: z.record(z.any()).optional(),
+  saveAs: z.string().optional(),
+  responseMapping: z.record(z.any()).optional(),
+});
+
+async function toolCallStep(context: StepContext, config: z.infer<typeof toolCallSchema>): Promise<StepResult> {
+  return safeExecute(context, 'toolCall', async () => {
+    context.logger?.info(`Executing tool call`, { 
+      runId: context.runId, 
+      templateKey: config.templateKey,
+      hasOverrides: !!config.overrides,
+      saveAs: config.saveAs
+    });
+
+    // Get tool template from workflow definition in context
+    // This assumes the workflow definition is available in context.data
+    const workflowDefinition = context.data.workflowDefinition;
+    if (!workflowDefinition?.tools?.templates) {
+      throw new Error('No tool templates available in workflow definition');
+    }
+
+    const template = workflowDefinition.tools.templates.find(
+      (t: ToolTemplate) => t.name === config.templateKey
+    );
+
+    if (!template) {
+      throw new Error(`Tool template '${config.templateKey}' not found in workflow definition`);
+    }
+
+    // Start with template config and apply overrides
+    let toolConfig = { ...template.config };
+    if (config.overrides) {
+      toolConfig = { ...toolConfig, ...config.overrides };
+    }
+
+    // Safe interpolation for ${data.foo} and ${metadata.*} placeholders
+    toolConfig = interpolateConfigValues(toolConfig, context);
+
+    context.logger?.info(`Tool template found`, {
+      runId: context.runId,
+      templateKey: config.templateKey,
+      toolType: template.toolType,
+      allowedDomains: template.allowedDomains?.length || 0
+    });
+
+    // Execute the tool
+    const toolResult = await executeTool(
+      template.toolType,
+      toolConfig,
+      context,
+      template.allowedDomains
+    );
+
+    context.logger?.info(`Tool execution completed`, {
+      runId: context.runId,
+      templateKey: config.templateKey,
+      success: toolResult.success,
+      error: toolResult.error,
+      hasData: !!toolResult.data,
+      metadata: toolResult.metadata
+    });
+
+    // Prepare step outputs
+    let outputs = {
+      templateKey: config.templateKey,
+      toolType: template.toolType,
+      success: toolResult.success,
+      data: toolResult.data,
+      error: toolResult.error,
+      metadata: toolResult.metadata,
+      executedAt: new Date().toISOString()
+    };
+
+    // Apply response mapping if specified
+    if (config.responseMapping && toolResult.data) {
+      outputs = applyResponseMapping(outputs, config.responseMapping, toolResult.data);
+    }
+
+    // Prepare context updates
+    let updates: Record<string, any> = {
+      [`lastToolCall_${config.templateKey}`]: outputs
+    };
+
+    // Save result with saveAs key if specified
+    if (config.saveAs && toolResult.success) {
+      updates[config.saveAs] = toolResult.data;
+    }
+
+    return {
+      updates,
+      outputs
+    };
+  });
+}
+
+/**
+ * Safe interpolation for configuration values
+ * Replaces ${data.foo} and ${metadata.*} placeholders with actual values
+ */
+function interpolateConfigValues(config: any, context: StepContext): any {
+  if (typeof config === 'string') {
+    return interpolateString(config, context);
+  } else if (Array.isArray(config)) {
+    return config.map(item => interpolateConfigValues(item, context));
+  } else if (config && typeof config === 'object') {
+    const result: any = {};
+    for (const [key, value] of Object.entries(config)) {
+      result[key] = interpolateConfigValues(value, context);
+    }
+    return result;
+  }
+  return config;
+}
+
+/**
+ * Interpolate string values with safe property access
+ */
+function interpolateString(str: string, context: StepContext): string {
+  return str.replace(/\$\{(data|metadata)\.([a-zA-Z_][a-zA-Z0-9_.]*)\}/g, (match, source, path) => {
+    try {
+      const sourceObj = source === 'data' ? context.data : context.data.metadata || {};
+      const value = getNestedProperty(sourceObj, path);
+      return value !== undefined ? String(value) : match;
+    } catch (error) {
+      context.logger?.warn(`Failed to interpolate ${match}`, {
+        runId: context.runId,
+        source,
+        path,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      return match; // Return original if interpolation fails
+    }
+  });
+}
+
+/**
+ * Get nested property value safely
+ */
+function getNestedProperty(obj: any, path: string): any {
+  return path.split('.').reduce((current, prop) => {
+    return current && typeof current === 'object' ? current[prop] : undefined;
+  }, obj);
+}
+
+/**
+ * Apply response mapping to transform tool output
+ */
+function applyResponseMapping(outputs: any, mapping: Record<string, any>, data: any): any {
+  const mappedOutputs = { ...outputs };
+  
+  for (const [targetKey, sourcePath] of Object.entries(mapping)) {
+    if (typeof sourcePath === 'string') {
+      const value = getNestedProperty(data, sourcePath);
+      if (value !== undefined) {
+        mappedOutputs[targetKey] = value;
+      }
+    }
+  }
+  
+  return mappedOutputs;
+}
+
+/**
  * noop: No-operation step for testing and placeholders
  * Does nothing but can be useful for workflow testing and debugging
  */
@@ -1276,6 +1446,12 @@ export const stepRegistry: StepRegistry = {
     configSchema: finalizeScanSchema,
     run: finalizeScanStep,
     description: 'Finalize and save complete scan results to database'
+  },
+
+  toolCall: {
+    configSchema: toolCallSchema,
+    run: toolCallStep,
+    description: 'Execute external tools by templateKey with safe interpolation and security validation'
   },
 
   noop: {

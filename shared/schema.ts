@@ -351,3 +351,127 @@ export type InsertWorkflowRun = z.infer<typeof insertWorkflowRunSchema>;
 export type WorkflowRun = typeof workflowRuns.$inferSelect;
 export type InsertWorkflowRunStep = z.infer<typeof insertWorkflowRunStepSchema>;
 export type WorkflowRunStep = typeof workflowRunSteps.$inferSelect;
+
+// =================== WORKFLOW DEFINITION INTERFACES ===================
+
+/**
+ * Tool template definition stored in workflow JSON
+ */
+export interface ToolTemplate {
+  /** Unique template name */
+  name: string;
+  /** Tool type identifier (httpRequest, webhook, emailSend, aiGenerate) */
+  toolType: string;
+  /** Tool configuration */
+  config: any;
+  /** Optional description */
+  description?: string;
+  /** Domain allowlist for security (for HTTP-based tools) */
+  allowedDomains?: string[];
+}
+
+/**
+ * Workflow step configuration
+ */
+export interface WorkflowStepConfig {
+  /** Unique key for this step within the workflow */
+  key: string;
+  /** Step type identifier */
+  type: string;
+  /** Step-specific configuration */
+  config: any;
+  /** Optional step name for display */
+  name?: string;
+  /** Optional step description */
+  description?: string;
+}
+
+/**
+ * Edge definition for workflow DAG
+ */
+export interface WorkflowEdge {
+  /** Source step key */
+  from: string;
+  /** Target step key */
+  to: string;
+  /** Optional condition for edge traversal */
+  when?: string;
+}
+
+/**
+ * Complete workflow definition structure stored in workflowVersions.definition
+ */
+export interface WorkflowDefinition {
+  /** Array of step definitions */
+  steps: WorkflowStepConfig[];
+  /** Array of edges defining step transitions */
+  edges: WorkflowEdge[];
+  /** Entry point step key */
+  entry: string;
+  /** Optional workflow metadata */
+  metadata?: {
+    name?: string;
+    description?: string;
+    version?: string;
+  };
+  /** Tool templates for toolCall steps */
+  tools?: {
+    templates: ToolTemplate[];
+  };
+}
+
+// =================== WORKFLOW DEFINITION SCHEMAS ===================
+
+/**
+ * Zod schema for ToolTemplate validation
+ */
+export const toolTemplateSchema = z.object({
+  name: z.string().min(1, "Template name is required"),
+  toolType: z.enum(["httpRequest", "webhook", "emailSend", "aiGenerate"]),
+  config: z.record(z.any()),
+  description: z.string().optional(),
+  allowedDomains: z.array(z.string()).optional(),
+});
+
+/**
+ * Zod schema for WorkflowStepConfig validation
+ */
+export const workflowStepConfigSchema = z.object({
+  key: z.string().min(1, "Step key is required"),
+  type: z.string().min(1, "Step type is required"),
+  config: z.record(z.any()),
+  name: z.string().optional(),
+  description: z.string().optional(),
+});
+
+/**
+ * Zod schema for WorkflowEdge validation
+ */
+export const workflowEdgeSchema = z.object({
+  from: z.string().min(1, "From step key is required"),
+  to: z.string().min(1, "To step key is required"),
+  when: z.string().optional(),
+});
+
+/**
+ * Zod schema for WorkflowDefinition validation
+ */
+export const workflowDefinitionSchema = z.object({
+  steps: z.array(workflowStepConfigSchema).min(1, "At least one step is required"),
+  edges: z.array(workflowEdgeSchema),
+  entry: z.string().min(1, "Entry step key is required"),
+  metadata: z.object({
+    name: z.string().optional(),
+    description: z.string().optional(),
+    version: z.string().optional(),
+  }).optional(),
+  tools: z.object({
+    templates: z.array(toolTemplateSchema),
+  }).optional(),
+});
+
+// Export types inferred from schemas
+export type ToolTemplateType = z.infer<typeof toolTemplateSchema>;
+export type WorkflowStepConfigType = z.infer<typeof workflowStepConfigSchema>;
+export type WorkflowEdgeType = z.infer<typeof workflowEdgeSchema>;
+export type WorkflowDefinitionType = z.infer<typeof workflowDefinitionSchema>;
