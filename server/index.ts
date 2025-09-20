@@ -60,8 +60,8 @@ app.use((req, res, next) => {
 
 // Note: Request/response logging is now handled by requestLoggingMiddleware
 
-// Serve static files from the GitHub repository's dist folder
-const distPath = path.resolve(import.meta.dirname, "dist");
+// Serve static files from the project root's dist folder
+const distPath = path.resolve(import.meta.dirname, "..", "dist", "public");
 
 (async () => {
   // Log application startup
