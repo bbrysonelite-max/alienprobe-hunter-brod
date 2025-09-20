@@ -36,14 +36,14 @@ export class HunterScheduler {
    * Initialize default hunting jobs
    */
   private initializeDefaultJobs() {
-    // Restaurant hunting job
+    // Local Restaurant Hunter - Family-owned, essential dining 
     this.addJob({
       id: 'hunt_restaurants',
-      name: 'Restaurant Hunter',
+      name: 'Local Restaurant Hunter',
       searchParams: {
         industry: 'restaurant',
         location: 'United States',
-        keywords: 'restaurant food dining',
+        keywords: 'family restaurant local dining pizza deli cafe',
         minRating: 3.5
       },
       schedule: 'daily',
@@ -54,37 +54,37 @@ export class HunterScheduler {
       failedRuns: 0
     });
 
-    // Local services hunting job
+    // Home Services Hunter - Essential contractors and professionals
     this.addJob({
       id: 'hunt_services',
-      name: 'Local Services Hunter',
+      name: 'Home Services Hunter',
       searchParams: {
         industry: 'services',
         location: 'United States', 
-        keywords: 'plumbing electrical cleaning repair',
-        minRating: 4.0
+        keywords: 'plumbing electrical pest control landscaping cleaning roofing',
+        minRating: 3.5
       },
       schedule: 'daily',
       enabled: true,
-      maxResultsPerRun: 30,
+      maxResultsPerRun: 35,
       totalDiscovered: 0,
       successfulRuns: 0,
       failedRuns: 0
     });
 
-    // Tech startup hunting job
+    // Essential Services Hunter - Warren Buffett businesses ($1M-$20M revenue)
     this.addJob({
-      id: 'hunt_tech',
-      name: 'Tech Startup Hunter',
+      id: 'hunt_essential_services',
+      name: 'Essential Services Hunter',
       searchParams: {
-        industry: 'technology',
-        location: 'San Francisco, CA',
-        keywords: 'software startup tech saas',
-        minRating: 4.0
+        industry: 'automotive services',
+        location: 'United States',
+        keywords: 'auto repair dry cleaner HVAC plumber electrician dentist salon',
+        minRating: 3.5
       },
-      schedule: 'weekly',
+      schedule: 'daily',
       enabled: true,
-      maxResultsPerRun: 25,
+      maxResultsPerRun: 40,
       totalDiscovered: 0,
       successfulRuns: 0,
       failedRuns: 0
