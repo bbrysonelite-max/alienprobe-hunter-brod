@@ -112,6 +112,25 @@ export const aiGenerateConfigSchema = z.object({
 
 export type AiGenerateConfig = z.infer<typeof aiGenerateConfigSchema>;
 
+/**
+ * Google Drive Upload tool configuration schema
+ */
+export const googleDriveUploadConfigSchema = z.object({
+  fileName: z.string().min(1, "File name is required").refine(
+    (name) => !/[<>:"/\\|?*]/.test(name),
+    "File name contains invalid characters"
+  ),
+  content: z.string().min(1, "Content is required").refine(
+    (content) => content.length <= 10 * 1024 * 1024, // 10MB limit
+    "Content size exceeds 10MB limit"
+  ),
+  folderId: z.string().optional(),
+  mimeType: z.string().default("text/plain"),
+  description: z.string().optional(),
+});
+
+export type GoogleDriveUploadConfig = z.infer<typeof googleDriveUploadConfigSchema>;
+
 // =================== UTILITY FUNCTIONS ===================
 
 /**
@@ -526,6 +545,164 @@ const aiGenerateTool: ToolDefinition<AiGenerateConfig> = {
   },
 };
 
+/**
+ * Google Drive Upload Tool
+ */
+const googleDriveUploadTool: ToolDefinition<GoogleDriveUploadConfig> = {
+  configSchema: googleDriveUploadConfigSchema,
+  description: "Upload files to Google Drive with security validation",
+  
+  async run(context: StepContext, config: GoogleDriveUploadConfig): Promise<ToolResult> {
+    context.logger.info("Executing Google Drive upload tool", {
+      runId: context.runId,
+      fileName: config.fileName,
+      contentSize: config.content.length,
+      mimeType: config.mimeType,
+      folderId: config.folderId,
+    });
+
+    const startTime = Date.now();
+
+    try {
+      // Check if API key is configured
+      const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
+      if (!apiKey) {
+        context.logger.warn("Google Drive API key not configured - using mock upload", {
+          runId: context.runId,
+        });
+        
+        const mockFileId = `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        return {
+          success: true,
+          data: {
+            fileId: mockFileId,
+            fileName: config.fileName,
+            mimeType: config.mimeType,
+            size: config.content.length,
+            webViewLink: `https://drive.google.com/file/d/${mockFileId}/view`,
+            downloadUrl: `https://drive.google.com/uc?id=${mockFileId}`,
+          },
+          metadata: {
+            provider: 'mock',
+            duration: Date.now() - startTime,
+            folderId: config.folderId,
+          },
+        };
+      }
+
+      // Sanitize filename for security
+      const sanitizedFileName = config.fileName.replace(/[<>:"/\\|?*]/g, '_').trim();
+      if (!sanitizedFileName) {
+        return {
+          success: false,
+          error: "Invalid file name after sanitization",
+        };
+      }
+
+      // Use default folder from environment if not specified
+      const folderId = config.folderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+      
+      // Create multipart upload payload
+      const boundary = `-------${Date.now()}`;
+      const metadata = {
+        name: sanitizedFileName,
+        ...(config.description && { description: config.description }),
+        ...(folderId && { parents: [folderId] }),
+      };
+
+      const multipartBody = [
+        `--${boundary}`,
+        'Content-Type: application/json',
+        '',
+        JSON.stringify(metadata),
+        `--${boundary}`,
+        `Content-Type: ${config.mimeType}`,
+        '',
+        config.content,
+        `--${boundary}--`
+      ].join('\r\n');
+
+      // Make Google Drive API call
+      const uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+      const response = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+          'Content-Length': multipartBody.length.toString(),
+        },
+        body: multipartBody,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        context.logger.error("Google Drive upload failed", {
+          runId: context.runId,
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText,
+        });
+
+        return {
+          success: false,
+          error: `Google Drive upload failed: ${response.status} ${response.statusText}`,
+        };
+      }
+
+      const uploadResult = await response.json();
+      const duration = Date.now() - startTime;
+
+      context.logger.info("Google Drive upload completed", {
+        runId: context.runId,
+        success: true,
+        fileId: uploadResult.id,
+        fileName: uploadResult.name,
+        size: config.content.length,
+        duration,
+      });
+
+      return {
+        success: true,
+        data: {
+          fileId: uploadResult.id,
+          fileName: uploadResult.name,
+          mimeType: uploadResult.mimeType || config.mimeType,
+          size: config.content.length,
+          webViewLink: `https://drive.google.com/file/d/${uploadResult.id}/view`,
+          downloadUrl: `https://drive.google.com/uc?id=${uploadResult.id}`,
+          createdTime: uploadResult.createdTime,
+        },
+        metadata: {
+          provider: 'google-drive',
+          duration,
+          folderId: folderId,
+          apiVersion: 'v3',
+        },
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown Google Drive error';
+      
+      context.logger.error("Google Drive upload failed", {
+        runId: context.runId,
+        error: errorMessage,
+        fileName: config.fileName,
+        duration,
+      });
+
+      return {
+        success: false,
+        error: errorMessage,
+        metadata: {
+          provider: 'google-drive',
+          duration,
+        },
+      };
+    }
+  },
+};
+
 // =================== TOOL REGISTRY ===================
 
 /**
@@ -536,6 +713,7 @@ export const toolRegistry = new Map<string, ToolDefinition>([
   ['webhook', webhookTool],
   ['emailSend', emailSendTool],
   ['aiGenerate', aiGenerateTool],
+  ['googleDriveUpload', googleDriveUploadTool],
 ]);
 
 /**

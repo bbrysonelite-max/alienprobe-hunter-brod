@@ -9,6 +9,10 @@ export interface TemplateVariables {
   verificationUrl?: string;
   unsubscribeUrl?: string;
   companyName?: string;
+  reportUrl?: string;
+  scanDate?: string;
+  reportSummary?: string;
+  downloadUrl?: string;
   [key: string]: string | undefined;
 }
 
@@ -171,6 +175,44 @@ Best regards,
 {{companyName}} Team
 
 ---
+{{unsubscribeUrl}}`,
+          enabled: true
+        },
+        {
+          key: 'scan_report',
+          step: 'scan_report',
+          subject: 'Your Business Analysis Report is Ready - {{businessName}}',
+          body: `Hi {{contactName}},
+
+Your comprehensive business analysis report for {{businessName}} is now complete!
+
+Report completed: {{scanDate}}
+
+KEY FINDINGS SUMMARY:
+{{reportSummary}}
+
+VIEW YOUR FULL REPORT:
+{{reportUrl}}
+
+DOWNLOAD REPORT:
+{{downloadUrl}}
+
+This report includes:
+• Complete technical analysis of your business systems
+• Security assessment and recommendations
+• Performance optimization opportunities
+• Competitive analysis insights
+• Actionable next steps and priorities
+
+Our team will follow up within 24 hours to discuss these findings and help you implement the recommended improvements.
+
+If you have any immediate questions about your report, please don't hesitate to reach out.
+
+Best regards,
+{{companyName}} Analysis Team
+
+---
+This report is confidential and intended solely for {{businessName}}.
 {{unsubscribeUrl}}`,
           enabled: true
         }

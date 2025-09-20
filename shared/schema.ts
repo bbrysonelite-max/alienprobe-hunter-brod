@@ -427,7 +427,7 @@ export interface WorkflowDefinition {
  */
 export const toolTemplateSchema = z.object({
   name: z.string().min(1, "Template name is required"),
-  toolType: z.enum(["httpRequest", "webhook", "emailSend", "aiGenerate"]),
+  toolType: z.enum(["httpRequest", "webhook", "emailSend", "aiGenerate", "googleDriveUpload"]),
   config: z.record(z.any()),
   description: z.string().optional(),
   allowedDomains: z.array(z.string()).optional(),

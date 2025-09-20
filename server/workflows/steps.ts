@@ -3,6 +3,9 @@ import { classifyEmailDomain, shouldFlagLead, getFlaggingReason } from "../utils
 import { URL } from "url";
 import { createHash } from "crypto";
 import { executeTool } from "./toolRegistry";
+import { reportGenerator } from "../utils/reportGenerator";
+import { emailTemplateManager } from "../email/templates";
+import { emailMailer } from "../email/mailer";
 import type { ToolTemplate } from "@shared/schema";
 
 // Strong typing for workflow context data structure
@@ -1408,6 +1411,209 @@ async function noopStep(context: StepContext, config: z.infer<typeof noopSchema>
 // =================== STEP REGISTRY ===================
 
 /**
+ * sendScanReport: Generate and send scan report to client while archiving to Google Drive
+ * Handles dual delivery: email to client and upload to Google Drive
+ */
+const sendScanReportSchema = z.object({
+  scanId: z.string().min(1, "Scan ID is required"),
+  recipientEmail: z.string().email("Valid email address required"),
+  reportTitle: z.string().optional().default("Business Analysis Report"),
+  includeArchiving: z.boolean().optional().default(true),
+  googleDriveFolderId: z.string().optional(),
+  emailTemplate: z.string().optional().default("scan_report")
+});
+
+async function sendScanReportStep(context: StepContext, config: z.infer<typeof sendScanReportSchema>): Promise<StepResult> {
+  return safeExecute(context, 'sendScanReport', async () => {
+    context.logger?.info(`Starting scan report delivery`, { 
+      runId: context.runId, 
+      scanId: config.scanId,
+      recipient: config.recipientEmail
+    });
+
+    // Get scan result and lead data
+    const scanResult = await context.storage.getScanResult(config.scanId);
+    if (!scanResult) {
+      throw new Error(`Scan result not found: ${config.scanId}`);
+    }
+
+    const lead = scanResult.leadId ? await context.storage.getLead(scanResult.leadId) : null;
+    
+    context.logger?.info(`Retrieved scan data`, { 
+      runId: context.runId,
+      businessName: scanResult.businessName,
+      hasLead: !!lead
+    });
+
+    // Generate professional report
+    const generatedReport = await reportGenerator.generateReport(scanResult, lead || undefined);
+    
+    context.logger?.info(`Report generated successfully`, { 
+      runId: context.runId,
+      fileName: generatedReport.fileName,
+      contentLength: generatedReport.htmlContent.length
+    });
+
+    const results = {
+      emailSent: false,
+      driveUploaded: false,
+      driveFileId: null,
+      driveUrl: null,
+      errors: [] as string[]
+    };
+
+    // Execute email sending and Google Drive archiving concurrently
+    const promises = [];
+
+    // Promise 1: Send email to client
+    const emailPromise = (async () => {
+      try {
+        // Get email template
+        const template = await emailTemplateManager.getTemplate(config.emailTemplate);
+        if (!template) {
+          throw new Error(`Email template not found: ${config.emailTemplate}`);
+        }
+
+        // Prepare template variables
+        const emailVariables = reportGenerator.generateEmailVariables(
+          scanResult, 
+          generatedReport,
+          `#report-${config.scanId}`, // Report view URL placeholder
+          `#download-${config.scanId}` // Download URL placeholder
+        );
+
+        // Add any additional lead-specific variables
+        if (lead) {
+          emailVariables.contactName = lead.contactName || emailVariables.businessName;
+          emailVariables.leadName = lead.contactName || emailVariables.businessName;
+        }
+
+        // Render email template
+        const { subject, body } = emailTemplateManager.renderTemplate(template, emailVariables);
+
+        // Send email
+        const emailResult = await emailMailer.sendEmail({
+          to: config.recipientEmail,
+          from: emailMailer.getFromAddress(),
+          subject,
+          text: body.replace(/<[^>]*>/g, ''), // Strip HTML for text version
+          html: body
+        });
+
+        if (emailResult.success) {
+          results.emailSent = true;
+          context.logger?.info(`Email sent successfully`, { 
+            runId: context.runId,
+            messageId: emailResult.messageId,
+            recipient: config.recipientEmail
+          });
+        } else {
+          throw new Error(emailResult.error || 'Email sending failed');
+        }
+
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Email sending failed';
+        results.errors.push(`Email error: ${errorMessage}`);
+        context.logger?.error(`Email sending failed`, { 
+          runId: context.runId,
+          error: errorMessage,
+          recipient: config.recipientEmail
+        });
+      }
+    });
+
+    promises.push(emailPromise());
+
+    // Promise 2: Upload to Google Drive (if archiving enabled)
+    if (config.includeArchiving) {
+      const drivePromise = (async () => {
+        try {
+          // Execute Google Drive upload using the tool
+          const driveResult = await executeTool(
+            'googleDriveUpload',
+            {
+              fileName: generatedReport.fileName,
+              content: generatedReport.htmlContent,
+              mimeType: generatedReport.mimeType,
+              folderId: config.googleDriveFolderId,
+              description: `Business analysis report for ${scanResult.businessName} - Generated on ${new Date().toLocaleDateString()}`
+            },
+            context
+          );
+
+          if (driveResult.success) {
+            results.driveUploaded = true;
+            results.driveFileId = driveResult.data?.fileId;
+            results.driveUrl = driveResult.data?.webViewLink;
+            
+            context.logger?.info(`Google Drive upload successful`, { 
+              runId: context.runId,
+              fileId: results.driveFileId,
+              fileName: generatedReport.fileName
+            });
+          } else {
+            throw new Error(driveResult.error || 'Drive upload failed');
+          }
+
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Google Drive upload failed';
+          results.errors.push(`Drive error: ${errorMessage}`);
+          context.logger?.error(`Google Drive upload failed`, { 
+            runId: context.runId,
+            error: errorMessage,
+            fileName: generatedReport.fileName
+          });
+        }
+      });
+
+      promises.push(drivePromise());
+    }
+
+    // Wait for both operations to complete
+    await Promise.all(promises);
+
+    // Determine overall success
+    const overallSuccess = results.emailSent && (!config.includeArchiving || results.driveUploaded);
+    
+    const outputs = {
+      success: overallSuccess,
+      emailSent: results.emailSent,
+      driveUploaded: results.driveUploaded,
+      driveFileId: results.driveFileId,
+      driveUrl: results.driveUrl,
+      reportFileName: generatedReport.fileName,
+      reportSummary: generatedReport.summary,
+      errors: results.errors,
+      scanId: config.scanId,
+      recipientEmail: config.recipientEmail
+    };
+
+    if (overallSuccess) {
+      context.logger?.info(`Scan report delivery completed successfully`, { 
+        runId: context.runId,
+        scanId: config.scanId,
+        emailSent: results.emailSent,
+        driveUploaded: results.driveUploaded
+      });
+    } else {
+      context.logger?.warn(`Scan report delivery completed with errors`, { 
+        runId: context.runId,
+        scanId: config.scanId,
+        errors: results.errors
+      });
+    }
+
+    return {
+      updates: { 
+        reportSent: overallSuccess,
+        reportDeliveryResults: outputs
+      },
+      outputs
+    };
+  });
+}
+
+/**
  * Main step registry containing all available step types
  * Maps step type strings to their definitions (schema + run function)
  */
@@ -1452,6 +1658,12 @@ export const stepRegistry: StepRegistry = {
     configSchema: toolCallSchema,
     run: toolCallStep,
     description: 'Execute external tools by templateKey with safe interpolation and security validation'
+  },
+
+  sendScanReport: {
+    configSchema: sendScanReportSchema,
+    run: sendScanReportStep,
+    description: 'Generate and send scan report to client while archiving to Google Drive'
   },
 
   noop: {
