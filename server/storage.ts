@@ -7,6 +7,7 @@ import {
   emailQueue,
   emailLog,
   payments,
+  chatMessages,
   type User, 
   type InsertUser, 
   type ScanResult, 
@@ -22,7 +23,9 @@ import {
   type EmailLog,
   type InsertEmailLog,
   type Payment,
-  type InsertPayment
+  type InsertPayment,
+  type ChatMessage,
+  type InsertChatMessage
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, count, sql, asc, or, gte, lte } from "drizzle-orm";
@@ -82,6 +85,13 @@ export interface IStorage {
   getPaymentByStripePaymentIntentId(paymentIntentId: string): Promise<Payment | undefined>;
   createPayment(payment: InsertPayment): Promise<Payment>;
   updatePayment(id: string, updates: Partial<Payment>): Promise<Payment | undefined>;
+
+  // Chat message operations
+  getChatMessage(id: string): Promise<ChatMessage | undefined>;
+  getChatMessagesByConversation(conversationId: string): Promise<ChatMessage[]>;
+  getChatMessagesByLeadId(leadId: string): Promise<ChatMessage[]>;
+  getChatMessagesByScanId(scanId: string): Promise<ChatMessage[]>;
+  createChatMessage(chatMessage: InsertChatMessage): Promise<ChatMessage>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -566,6 +576,54 @@ export class DatabaseStorage implements IStorage {
       .where(eq(payments.id, id))
       .returning();
     return payment || undefined;
+  }
+
+  // Chat message operations implementation
+  async getChatMessage(id: string): Promise<ChatMessage | undefined> {
+    const [message] = await db.select().from(chatMessages).where(eq(chatMessages.id, id));
+    return message || undefined;
+  }
+
+  async getChatMessagesByConversation(conversationId: string): Promise<ChatMessage[]> {
+    const messages = await db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.conversationId, conversationId))
+      .orderBy(asc(chatMessages.createdAt));
+    return messages;
+  }
+
+  async getChatMessagesByLeadId(leadId: string): Promise<ChatMessage[]> {
+    const messages = await db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.leadId, leadId))
+      .orderBy(asc(chatMessages.createdAt));
+    return messages;
+  }
+
+  async getChatMessagesByScanId(scanId: string): Promise<ChatMessage[]> {
+    const messages = await db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.scanId, scanId))
+      .orderBy(asc(chatMessages.createdAt));
+    return messages;
+  }
+
+  async createChatMessage(insertChatMessage: InsertChatMessage): Promise<ChatMessage> {
+    const [message] = await db
+      .insert(chatMessages)
+      .values({
+        conversationId: insertChatMessage.conversationId,
+        scanId: insertChatMessage.scanId || null,
+        leadId: insertChatMessage.leadId || null,
+        role: insertChatMessage.role,
+        content: insertChatMessage.content,
+        metadata: insertChatMessage.metadata || null,
+      })
+      .returning();
+    return message;
   }
 }
 
