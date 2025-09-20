@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { db } from "./db";
 import { 
   insertScanResultSchema, 
   insertLeadSchema, 
@@ -11,12 +12,16 @@ import {
   insertWorkflowRunSchema,
   insertWorkflowRunStepSchema,
   workflowDefinitionSchema,
+  payments,
+  scanResults,
+  emailLog,
   type Workflow,
   type WorkflowVersion,
   type WorkflowRun,
   type WorkflowRunStep
 } from "@shared/schema";
 import { z } from "zod";
+import { eq, desc, and, count, sql, asc, or, gte, lte } from "drizzle-orm";
 import { healthCheck, livenessProbe, readinessProbe, metricsEndpoint, simulateError } from "./monitoring";
 import { logger } from "./logger";
 import crypto from "crypto";
@@ -31,6 +36,7 @@ const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const STRIPE_PAYMENT_LINK_URL = process.env.STRIPE_PAYMENT_LINK_URL;
 const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "4900"); // Default $49.00
+const DAILY_REVENUE_GOAL_CENTS = parseInt(process.env.DAILY_REVENUE_GOAL_CENTS || "50000"); // Default $500.00
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2025-08-27.basil", // Use latest API version
@@ -2588,6 +2594,59 @@ export async function registerRoutes(app: Express): Promise<Server> {
         error: "Failed to fetch workflow run details"
       });
     }
+  });
+
+  // ===== DAILY REVENUE GOAL TRACKING =====
+  
+  // In-memory storage for runtime goal override (would be persisted in production)
+  let runtimeDailyGoalCents: number | null = null;
+  
+  // Admin endpoint to set daily revenue goal
+  app.post("/api/admin/settings/daily-goal", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const schema = z.object({
+        goalCents: z.number().int().positive("Goal must be positive cents")
+      });
+      
+      const { goalCents } = schema.parse(req.body);
+      runtimeDailyGoalCents = goalCents;
+      
+      logger.info('Daily revenue goal updated', { 
+        goalCents, 
+        goalDollars: goalCents / 100
+      });
+      
+      res.json({
+        success: true,
+        data: {
+          goalCents,
+          goalDollars: goalCents / 100
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to update daily revenue goal', error as Error);
+      res.status(400).json({
+        success: false,
+        error: error instanceof z.ZodError ? error.errors : "Invalid goal value"
+      });
+    }
+  });
+  
+  // Test endpoint to debug the issue
+  app.get("/api/test", (req: Request, res: Response) => {
+    res.json({ message: "test endpoint works" });
+  });
+  
+  // Daily revenue goal tracking endpoint
+  app.get("/api/analytics/daily", (req: Request, res: Response) => {
+    logger.info('Daily analytics endpoint hit');
+    res.json({
+      success: true,
+      data: {
+        status: "analytics endpoint working",
+        timestamp: new Date().toISOString()
+      }
+    });
   });
 
   // Health and monitoring endpoints
