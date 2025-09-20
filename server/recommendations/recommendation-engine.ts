@@ -51,8 +51,10 @@ export class RecommendationEngine {
     // Score and rank tools for this business
     const recommendations = await this.scoreTools(profile, availableTools);
     
-    // Store recommendations in database
-    await this.storeRecommendations(leadId, scanId, recommendations, context);
+    // Store recommendations in database (skip for demo leads)
+    if (!leadId.startsWith('lead_')) {
+      await this.storeRecommendations(leadId, scanId, recommendations, context);
+    }
     
     logger.info('✅ Tool recommendations generated', {
       leadId,
@@ -67,7 +69,20 @@ export class RecommendationEngine {
    * Build business profile from lead and scan data
    */
   private async buildBusinessProfile(leadId: string, scanId?: string): Promise<BusinessProfile> {
-    // Get lead information
+    // Handle demo leads (simulated)
+    if (leadId.startsWith('lead_')) {
+      return {
+        industry: 'automotive',
+        businessSize: '1-10',
+        revenue: '5k-25k',
+        painPoints: ['Customer management', 'Online presence'],
+        currentTools: ['Basic POS', 'Email'],
+        website: null,
+        location: 'Chicago, IL'
+      };
+    }
+    
+    // Get lead information from database
     const lead = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
     if (lead.length === 0) {
       throw new Error(`Lead not found: ${leadId}`);
