@@ -8,6 +8,7 @@ import { logger } from "./logger";
 import crypto from "crypto";
 import Stripe from "stripe";
 import { processChatMessage, isChatEnabled } from "./chat";
+import { insertChatMessageSchema } from "@shared/schema";
 
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -1233,7 +1234,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Chat API endpoints
   app.post("/api/chat", async (req: Request, res: Response) => {
     try {
-      const { message, context } = req.body;
+      const { message, context, conversationId } = req.body;
 
       if (!message || typeof message !== 'string') {
         res.status(400).json({
@@ -1251,16 +1252,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return;
       }
 
+      // Generate conversation ID if not provided
+      const finalConversationId = conversationId || crypto.randomUUID();
+
       logger.info('Chat message received', { 
         messageLength: message.length,
-        hasContext: !!context
+        hasContext: !!context,
+        conversationId: finalConversationId
       });
 
+      // Save user message to database
+      try {
+        await storage.createChatMessage({
+          conversationId: finalConversationId,
+          scanId: context?.scanId || null,
+          leadId: context?.leadId || null,
+          role: "user",
+          content: message,
+          metadata: { context }
+        });
+      } catch (dbError) {
+        logger.warn('Failed to save user message to database', dbError as Error);
+      }
+
       const chatResponse = await processChatMessage({ message, context });
+
+      // Save assistant response to database
+      if (chatResponse.success && chatResponse.response) {
+        try {
+          await storage.createChatMessage({
+            conversationId: finalConversationId,
+            scanId: context?.scanId || null,
+            leadId: context?.leadId || null,
+            role: "assistant",
+            content: chatResponse.response,
+            metadata: { context, tokens: chatResponse.tokens }
+          });
+        } catch (dbError) {
+          logger.warn('Failed to save assistant response to database', dbError as Error);
+        }
+      }
 
       res.json({
         success: chatResponse.success,
         response: chatResponse.response,
+        conversationId: finalConversationId,
         ...(chatResponse.error && { error: chatResponse.error })
       });
 
@@ -1287,6 +1323,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({
         success: false,
         error: "Failed to check chat status"
+      });
+    }
+  });
+
+  app.get("/api/chat/history/:conversationId", async (req: Request, res: Response) => {
+    try {
+      const { conversationId } = req.params;
+
+      if (!conversationId) {
+        res.status(400).json({
+          success: false,
+          error: "Conversation ID is required"
+        });
+        return;
+      }
+
+      logger.info('Chat history requested', { conversationId });
+
+      const messages = await storage.getChatMessagesByConversation(conversationId);
+
+      res.json({
+        success: true,
+        messages,
+        conversationId
+      });
+
+    } catch (error) {
+      logger.error('Chat history retrieval failed', error as Error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to retrieve chat history"
       });
     }
   });
