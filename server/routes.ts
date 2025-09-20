@@ -22,6 +22,8 @@ import crypto from "crypto";
 import Stripe from "stripe";
 import { processChatMessage, isChatEnabled } from "./chat";
 import { WorkflowExecutor } from "./workflows/executor";
+import { createHash, timingSafeEqual } from "crypto";
+import jwt from "jsonwebtoken";
 
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -38,48 +40,257 @@ const paymentsEnabled = !!STRIPE_SECRET_KEY;
 // Initialize Workflow Executor
 const workflowExecutor = new WorkflowExecutor();
 
-// Basic authentication middleware for admin endpoints
-const requireAuth = (req: Request, res: Response, next: Function) => {
-  // Basic role validation - in a real app this would check JWT tokens, sessions, etc.
-  const authHeader = req.headers.authorization;
-  const apiKey = req.headers['x-api-key'];
-  
-  // For development, allow requests with basic API key or admin role
-  if (apiKey === process.env.ADMIN_API_KEY || 
-      authHeader === 'Bearer admin-token' ||
-      (req as any).user?.role === 'admin') {
-    next();
-  } else {
-    res.status(401).json({
-      success: false,
-      error: "Unauthorized - Admin access required"
-    });
-  }
+// Enhanced authentication and authorization system
+interface AuthenticatedUser {
+  id: string;
+  role: 'admin' | 'operator' | 'viewer';
+  permissions: string[];
+  issuedAt: number;
+  expiresAt?: number;
+}
+
+// Role-based permissions mapping
+const ROLE_PERMISSIONS = {
+  admin: ['workflow:create', 'workflow:read', 'workflow:update', 'workflow:delete', 'system:monitor'],
+  operator: ['workflow:read', 'workflow:update', 'workflow:execute'],
+  viewer: ['workflow:read']
 };
 
-// Rate limiting map for admin endpoints (simple in-memory implementation)
-const rateLimits = new Map<string, { count: number; resetTime: number }>();
+// Secure API key validation with timing-safe comparison
+function validateApiKey(providedKey: string, storedKey: string): boolean {
+  if (!providedKey || !storedKey) return false;
+  
+  // Convert to buffers for timing-safe comparison
+  const providedBuffer = Buffer.from(providedKey);
+  const storedBuffer = Buffer.from(storedKey);
+  
+  // Keys must be same length for timing-safe comparison
+  if (providedBuffer.length !== storedBuffer.length) return false;
+  
+  return timingSafeEqual(providedBuffer, storedBuffer);
+}
 
-const rateLimit = (maxRequests: number = 100, windowMs: number = 60000) => {
-  return (req: Request, res: Response, next: Function) => {
-    const key = req.ip || 'unknown';
-    const now = Date.now();
-    const limit = rateLimits.get(key);
+// Enhanced JWT token validation
+function validateJwtToken(token: string): AuthenticatedUser | null {
+  try {
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      logger.error('JWT_SECRET not configured for secure authentication');
+      return null;
+    }
+
+    const decoded = jwt.verify(token, jwtSecret) as any;
     
-    if (!limit || now > limit.resetTime) {
-      rateLimits.set(key, { count: 1, resetTime: now + windowMs });
+    // Validate token structure
+    if (!decoded.id || !decoded.role || !ROLE_PERMISSIONS[decoded.role]) {
+      logger.warn('Invalid JWT token structure', { tokenPayload: decoded });
+      return null;
+    }
+
+    // Check expiration
+    if (decoded.exp && Date.now() / 1000 > decoded.exp) {
+      logger.warn('JWT token expired', { tokenId: decoded.id, expiredAt: decoded.exp });
+      return null;
+    }
+
+    return {
+      id: decoded.id,
+      role: decoded.role,
+      permissions: ROLE_PERMISSIONS[decoded.role] || [],
+      issuedAt: decoded.iat || 0,
+      expiresAt: decoded.exp
+    };
+  } catch (error) {
+    logger.warn('JWT token validation failed', { 
+      error: error instanceof Error ? error.message : 'Unknown error' 
+    });
+    return null;
+  }
+}
+
+// Enhanced authentication middleware with role-based access control
+const requireAuth = (requiredPermissions: string[] = []) => {
+  return (req: Request, res: Response, next: Function) => {
+    const startTime = Date.now();
+    const authHeader = req.headers.authorization;
+    const apiKey = req.headers['x-api-key'] as string;
+    const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
+    
+    let authenticatedUser: AuthenticatedUser | null = null;
+    let authMethod = 'none';
+
+    try {
+      // Method 1: Secure API Key authentication
+      if (apiKey && process.env.ADMIN_API_KEY) {
+        if (validateApiKey(apiKey, process.env.ADMIN_API_KEY)) {
+          authenticatedUser = {
+            id: 'api-key-admin',
+            role: 'admin',
+            permissions: ROLE_PERMISSIONS.admin,
+            issuedAt: Date.now() / 1000
+          };
+          authMethod = 'api-key';
+        } else {
+          logger.warn('Invalid API key authentication attempt', { 
+            clientIp,
+            userAgent: req.headers['user-agent'],
+            endpoint: req.path
+          });
+        }
+      }
+      
+      // Method 2: JWT Token authentication
+      if (!authenticatedUser && authHeader?.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+        authenticatedUser = validateJwtToken(token);
+        if (authenticatedUser) {
+          authMethod = 'jwt';
+        }
+      }
+
+      // Check if user is authenticated
+      if (!authenticatedUser) {
+        logger.warn('Unauthorized access attempt', {
+          clientIp,
+          userAgent: req.headers['user-agent'],
+          endpoint: req.path,
+          hasApiKey: !!apiKey,
+          hasAuthHeader: !!authHeader
+        });
+        
+        return res.status(401).json({
+          success: false,
+          error: "Unauthorized - Valid authentication required",
+          code: 'AUTH_REQUIRED'
+        });
+      }
+
+      // Check permissions if required
+      if (requiredPermissions.length > 0) {
+        const hasRequiredPermissions = requiredPermissions.every(permission => 
+          authenticatedUser!.permissions.includes(permission)
+        );
+        
+        if (!hasRequiredPermissions) {
+          logger.warn('Insufficient permissions for admin endpoint', {
+            userId: authenticatedUser.id,
+            userRole: authenticatedUser.role,
+            requiredPermissions,
+            userPermissions: authenticatedUser.permissions,
+            endpoint: req.path,
+            clientIp
+          });
+          
+          return res.status(403).json({
+            success: false,
+            error: "Forbidden - Insufficient permissions",
+            code: 'INSUFFICIENT_PERMISSIONS',
+            required: requiredPermissions
+          });
+        }
+      }
+
+      // Log successful authentication
+      logger.info('Successful admin authentication', {
+        userId: authenticatedUser.id,
+        role: authenticatedUser.role,
+        method: authMethod,
+        endpoint: req.path,
+        clientIp,
+        authDuration: Date.now() - startTime
+      });
+
+      // Attach user to request
+      (req as any).user = authenticatedUser;
       next();
-    } else if (limit.count < maxRequests) {
-      limit.count++;
-      next();
-    } else {
-      res.status(429).json({
+      
+    } catch (error) {
+      logger.error('Authentication middleware error', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        endpoint: req.path,
+        clientIp
+      });
+      
+      return res.status(500).json({
         success: false,
-        error: "Rate limit exceeded. Please try again later."
+        error: "Internal authentication error",
+        code: 'AUTH_ERROR'
       });
     }
   };
 };
+
+// Helper function for basic admin auth (backward compatibility)
+const requireAdminAuth = requireAuth(['workflow:read', 'workflow:update']);
+
+// Enhanced rate limiting with security considerations
+interface RateLimitEntry {
+  count: number;
+  resetTime: number;
+  suspiciousActivity: boolean;
+  lastAttempt: number;
+}
+
+const rateLimits = new Map<string, RateLimitEntry>();
+
+// Enhanced rate limiting with security monitoring
+const rateLimit = (maxRequests: number = 100, windowMs: number = 60000, strictMode: boolean = false) => {
+  return (req: Request, res: Response, next: Function) => {
+    const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
+    const userAgent = req.headers['user-agent'] || 'unknown';
+    const key = `${clientIp}:${userAgent.substring(0, 50)}`; // Include user agent for better tracking
+    const now = Date.now();
+    const limit = rateLimits.get(key);
+    
+    // Check for suspicious patterns
+    const isSuspicious = strictMode && (
+      !req.headers['user-agent'] || 
+      req.headers['user-agent'].includes('curl') ||
+      req.headers['user-agent'].includes('wget') ||
+      req.headers['user-agent'].length < 10
+    );
+    
+    if (!limit || now > limit.resetTime) {
+      rateLimits.set(key, { 
+        count: 1, 
+        resetTime: now + windowMs,
+        suspiciousActivity: isSuspicious,
+        lastAttempt: now
+      });
+      next();
+    } else if (limit.count < maxRequests) {
+      limit.count++;
+      limit.lastAttempt = now;
+      if (isSuspicious) {
+        limit.suspiciousActivity = true;
+      }
+      next();
+    } else {
+      // Log rate limit exceeded
+      logger.warn('Rate limit exceeded', {
+        clientIp,
+        userAgent,
+        endpoint: req.path,
+        requestCount: limit.count,
+        suspiciousActivity: limit.suspiciousActivity || isSuspicious,
+        windowMs
+      });
+      
+      // Mark as suspicious if hitting rate limits frequently
+      limit.suspiciousActivity = true;
+      
+      res.status(429).json({
+        success: false,
+        error: "Rate limit exceeded. Please try again later.",
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: Math.ceil((limit.resetTime - now) / 1000)
+      });
+    }
+  };
+};
+
+// Strict rate limiting for admin endpoints
+const adminRateLimit = rateLimit(50, 60000, true);
 
 // Validation schemas for workflow endpoints
 const paginationSchema = z.object({
@@ -94,7 +305,7 @@ const updateWorkflowSchema = z.object({
 });
 
 const updateWorkflowVersionSchema = z.object({
-  definition: z.any().optional(),
+  definition: z.record(z.any()).optional(), // More specific than 'any'
   status: z.enum(["draft", "published"]).optional()
 });
 
@@ -1897,7 +2108,233 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // 8. POST /api/workflows/:id/make-default - Make workflow default for businessType
+  // 8. DELETE /api/workflows/:id - Delete workflow with proper dependency checking
+  app.delete("/api/workflows/:id", requireAdminAuth, adminRateLimit, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { force } = req.query; // Allow force deletion for admin override
+      const forceDelete = force === 'true';
+      
+      logger.info('Workflow deletion initiated', { 
+        workflowId: id, 
+        forceDelete,
+        userId: (req as any).user?.id 
+      });
+
+      const workflow = await storage.getWorkflow(id);
+      if (!workflow) {
+        res.status(404).json({
+          success: false,
+          error: "Workflow not found",
+          code: 'WORKFLOW_NOT_FOUND'
+        });
+        return;
+      }
+
+      // Comprehensive dependency analysis
+      const dependencyCheck = await checkWorkflowDependencies(id);
+      
+      if (dependencyCheck.hasActiveRuns && !forceDelete) {
+        res.status(409).json({
+          success: false,
+          error: "Cannot delete workflow with active runs",
+          code: 'ACTIVE_RUNS_EXIST',
+          details: {
+            activeRuns: dependencyCheck.activeRunCount,
+            versions: dependencyCheck.versionCount,
+            totalRuns: dependencyCheck.totalRunCount,
+            totalSteps: dependencyCheck.totalStepCount
+          },
+          suggestions: [
+            "Wait for active runs to complete",
+            "Cancel active runs first",
+            "Use force=true query parameter for admin override (will cascade delete)"
+          ]
+        });
+        return;
+      }
+
+      if (dependencyCheck.hasDependencies && !forceDelete) {
+        res.status(409).json({
+          success: false,
+          error: "Workflow has dependencies that prevent deletion",
+          code: 'DEPENDENCIES_EXIST',
+          details: {
+            versions: dependencyCheck.versionCount,
+            totalRuns: dependencyCheck.totalRunCount,
+            totalSteps: dependencyCheck.totalStepCount,
+            isDefault: workflow.isDefault
+          },
+          suggestions: [
+            "Use force=true query parameter to cascade delete all dependencies",
+            "Manually clean up workflow runs and versions first"
+          ]
+        });
+        return;
+      }
+
+      // Perform transactional deletion with proper error handling
+      const deletionResult = await performWorkflowDeletion(id, forceDelete, dependencyCheck);
+      
+      if (!deletionResult.success) {
+        logger.error('Workflow deletion failed', undefined, {
+          workflowId: id,
+          error: deletionResult.error,
+          partialDeletion: deletionResult.partialDeletion
+        });
+        
+        res.status(500).json({
+          success: false,
+          error: deletionResult.error,
+          code: 'DELETION_FAILED',
+          partialDeletion: deletionResult.partialDeletion
+        });
+        return;
+      }
+
+      logger.info('Workflow deleted successfully', { 
+        workflowId: id, 
+        workflowName: workflow.name,
+        forceDelete,
+        deletedComponents: deletionResult.deletedComponents
+      });
+
+      res.json({
+        success: true,
+        message: "Workflow deleted successfully",
+        details: {
+          deletedComponents: deletionResult.deletedComponents,
+          cascadeDelete: forceDelete
+        }
+      });
+
+    } catch (error) {
+      logger.error('Workflow deletion failed with exception', error as Error, { 
+        workflowId: req.params.id,
+        userId: (req as any).user?.id 
+      });
+      res.status(500).json({
+        success: false,
+        error: "Internal error during workflow deletion",
+        code: 'DELETION_EXCEPTION'
+      });
+    }
+  });
+
+  // Helper function to check all workflow dependencies
+  async function checkWorkflowDependencies(workflowId: string) {
+    try {
+      const versions = await storage.getWorkflowVersionsByWorkflowId(workflowId);
+      let totalRunCount = 0;
+      let activeRunCount = 0;
+      let totalStepCount = 0;
+      
+      for (const version of versions) {
+        // Get all runs for this version (not just active ones)
+        const allRuns = await storage.getWorkflowRunsByVersionId(version.id);
+        totalRunCount += allRuns.length;
+        
+        // Count active runs
+        const activeRuns = allRuns.filter(run => 
+          run.status === 'running' || run.status === 'queued'
+        );
+        activeRunCount += activeRuns.length;
+        
+        // Count steps for all runs
+        for (const run of allRuns) {
+          const steps = await storage.getWorkflowRunStepsByRunId(run.id);
+          totalStepCount += steps.length;
+        }
+      }
+      
+      return {
+        versionCount: versions.length,
+        totalRunCount,
+        activeRunCount,
+        totalStepCount,
+        hasActiveRuns: activeRunCount > 0,
+        hasDependencies: versions.length > 0 || totalRunCount > 0
+      };
+    } catch (error) {
+      logger.error('Failed to check workflow dependencies', error as Error, { workflowId });
+      throw new Error('Failed to analyze workflow dependencies');
+    }
+  }
+
+  // Helper function to perform transactional workflow deletion
+  async function performWorkflowDeletion(workflowId: string, forceDelete: boolean, dependencies: any) {
+    const deletedComponents = {
+      workflow: false,
+      versions: 0,
+      runs: 0,
+      steps: 0
+    };
+    
+    try {
+      if (forceDelete && dependencies.hasDependencies) {
+        // Cascade delete in proper order: steps -> runs -> versions -> workflow
+        logger.info('Starting cascade deletion', { 
+          workflowId,
+          dependencies: {
+            versions: dependencies.versionCount,
+            runs: dependencies.totalRunCount,
+            steps: dependencies.totalStepCount
+          }
+        });
+        
+        // Delete workflow run steps first
+        const versions = await storage.getWorkflowVersionsByWorkflowId(workflowId);
+        for (const version of versions) {
+          const runs = await storage.getWorkflowRunsByVersionId(version.id);
+          for (const run of runs) {
+            const stepsDeleted = await storage.deleteWorkflowRunStepsByRunId(run.id);
+            deletedComponents.steps += stepsDeleted;
+          }
+          
+          // Delete workflow runs
+          const runsDeleted = await storage.deleteWorkflowRunsByVersionId(version.id);
+          deletedComponents.runs += runsDeleted;
+        }
+        
+        // Delete workflow versions
+        const versionsDeleted = await storage.deleteWorkflowVersionsByWorkflowId(workflowId);
+        deletedComponents.versions = versionsDeleted;
+      }
+      
+      // Finally delete the workflow itself
+      const workflowDeleted = await storage.deleteWorkflow(workflowId);
+      deletedComponents.workflow = workflowDeleted;
+      
+      if (!workflowDeleted) {
+        return {
+          success: false,
+          error: 'Failed to delete workflow record',
+          partialDeletion: deletedComponents,
+          deletedComponents
+        };
+      }
+      
+      return {
+        success: true,
+        deletedComponents
+      };
+      
+    } catch (error) {
+      logger.error('Transactional deletion failed', error as Error, { 
+        workflowId,
+        partialDeletion: deletedComponents 
+      });
+      
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown deletion error',
+        partialDeletion: deletedComponents,
+        deletedComponents
+      };
+    }
+  }
+
+  // 9. POST /api/workflows/:id/make-default - Make workflow default for businessType
   app.post("/api/workflows/:id/make-default", requireAuth, rateLimit(20, 60000), async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
@@ -1961,7 +2398,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // **Workflow Runs API:**
 
-  // 9. GET /api/workflow-runs - List workflow runs with optional scanId filter
+  // 10. GET /api/workflow-runs - List workflow runs with optional scanId filter
   app.get("/api/workflow-runs", requireAuth, rateLimit(100, 60000), async (req: Request, res: Response) => {
     try {
       const queryValidation = z.object({
@@ -2041,7 +2478,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // 10. GET /api/workflow-runs/:id - Get specific workflow run with steps
+  // 11. GET /api/workflow-runs/:id - Get specific workflow run with steps
   app.get("/api/workflow-runs/:id", requireAuth, rateLimit(100, 60000), async (req: Request, res: Response) => {
     try {
       const { id } = req.params;

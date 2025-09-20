@@ -108,10 +108,12 @@ export interface IStorage {
   // Workflow operations
   getWorkflow(id: string): Promise<Workflow | undefined>;
   getWorkflowByName(name: string): Promise<Workflow | undefined>;
+  getAllWorkflows(): Promise<Workflow[]>;
   getPublishedWorkflowByBusinessType(businessType: string): Promise<WorkflowVersion | undefined>;
   getDefaultPublishedWorkflow(): Promise<WorkflowVersion | undefined>;
   createWorkflow(workflow: InsertWorkflow): Promise<Workflow>;
   updateWorkflow(id: string, updates: Partial<Workflow>): Promise<Workflow | undefined>;
+  deleteWorkflow(id: string): Promise<boolean>;
   
   // Workflow version operations
   getWorkflowVersion(id: string): Promise<WorkflowVersion | undefined>;
@@ -122,14 +124,21 @@ export interface IStorage {
   // Workflow run operations
   getWorkflowRun(id: string): Promise<WorkflowRun | undefined>;
   getWorkflowRunsByStatus(status: string): Promise<WorkflowRun[]>;
+  getWorkflowRunsByVersionId(versionId: string): Promise<WorkflowRun[]>;
   createWorkflowRun(run: InsertWorkflowRun): Promise<WorkflowRun>;
   updateWorkflowRun(id: string, updates: Partial<WorkflowRun>): Promise<WorkflowRun | undefined>;
+  deleteWorkflowRunsByVersionId(versionId: string): Promise<number>;
   
   // Workflow run step operations
   getWorkflowRunStep(id: string): Promise<WorkflowRunStep | undefined>;
   getWorkflowRunSteps(runId: string): Promise<WorkflowRunStep[]>;
+  getWorkflowRunStepsByRunId(runId: string): Promise<WorkflowRunStep[]>;
   createWorkflowRunStep(step: InsertWorkflowRunStep): Promise<WorkflowRunStep>;
   updateWorkflowRunStep(id: string, updates: Partial<WorkflowRunStep>): Promise<WorkflowRunStep | undefined>;
+  deleteWorkflowRunStepsByRunId(runId: string): Promise<number>;
+  
+  // Workflow version deletion operations
+  deleteWorkflowVersionsByWorkflowId(workflowId: string): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -675,6 +684,14 @@ export class DatabaseStorage implements IStorage {
     return workflow || undefined;
   }
 
+  async getAllWorkflows(): Promise<Workflow[]> {
+    const allWorkflows = await db
+      .select()
+      .from(workflows)
+      .orderBy(desc(workflows.createdAt));
+    return allWorkflows;
+  }
+
   async getPublishedWorkflowByBusinessType(businessType: string): Promise<WorkflowVersion | undefined> {
     const [result] = await db
       .select({
@@ -734,6 +751,11 @@ export class DatabaseStorage implements IStorage {
       .where(eq(workflows.id, id))
       .returning();
     return workflow || undefined;
+  }
+
+  async deleteWorkflow(id: string): Promise<boolean> {
+    const result = await db.delete(workflows).where(eq(workflows.id, id)).returning();
+    return result.length > 0;
   }
 
   // Workflow version operations implementation
@@ -830,6 +852,51 @@ export class DatabaseStorage implements IStorage {
       .where(eq(workflowRunSteps.id, id))
       .returning();
     return step || undefined;
+  }
+
+  // Additional workflow run operations for cascade deletion
+  async getWorkflowRunsByVersionId(versionId: string): Promise<WorkflowRun[]> {
+    const runs = await db
+      .select()
+      .from(workflowRuns)
+      .where(eq(workflowRuns.workflowVersionId, versionId))
+      .orderBy(asc(workflowRuns.createdAt));
+    return runs;
+  }
+
+  async deleteWorkflowRunsByVersionId(versionId: string): Promise<number> {
+    const result = await db
+      .delete(workflowRuns)
+      .where(eq(workflowRuns.workflowVersionId, versionId))
+      .returning();
+    return result.length;
+  }
+
+  // Additional workflow run step operations for cascade deletion
+  async getWorkflowRunStepsByRunId(runId: string): Promise<WorkflowRunStep[]> {
+    const steps = await db
+      .select()
+      .from(workflowRunSteps)
+      .where(eq(workflowRunSteps.runId, runId))
+      .orderBy(asc(workflowRunSteps.startedAt));
+    return steps;
+  }
+
+  async deleteWorkflowRunStepsByRunId(runId: string): Promise<number> {
+    const result = await db
+      .delete(workflowRunSteps)
+      .where(eq(workflowRunSteps.runId, runId))
+      .returning();
+    return result.length;
+  }
+
+  // Workflow version deletion operations
+  async deleteWorkflowVersionsByWorkflowId(workflowId: string): Promise<number> {
+    const result = await db
+      .delete(workflowVersions)
+      .where(eq(workflowVersions.workflowId, workflowId))
+      .returning();
+    return result.length;
   }
 }
 

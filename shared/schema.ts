@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, boolean, real, json, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, boolean, real, json, jsonb, unique, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -115,28 +115,47 @@ export const workflows = pgTable("workflows", {
 
 export const workflowVersions = pgTable("workflow_versions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  workflowId: varchar("workflow_id").notNull().references(() => workflows.id),
+  workflowId: varchar("workflow_id").notNull().references(() => workflows.id, { onDelete: 'cascade' }),
   version: integer("version").notNull(),
   status: text("status").notNull().default("draft"), // draft/published
   definition: jsonb("definition").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    // Unique constraint to prevent duplicate workflow versions
+    workflowVersionUnique: unique().on(table.workflowId, table.version),
+    // Performance indexes
+    statusIdx: index("workflow_versions_status_idx").on(table.status),
+    createdAtIdx: index("workflow_versions_created_at_idx").on(table.createdAt),
+    workflowIdIdx: index("workflow_versions_workflow_id_idx").on(table.workflowId),
+  };
 });
 
 export const workflowRuns = pgTable("workflow_runs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  workflowVersionId: varchar("workflow_version_id").notNull().references(() => workflowVersions.id),
-  scanId: varchar("scan_id").references(() => scanResults.id),
-  leadId: varchar("lead_id").references(() => leads.id),
+  workflowVersionId: varchar("workflow_version_id").notNull().references(() => workflowVersions.id, { onDelete: 'cascade' }),
+  scanId: varchar("scan_id").references(() => scanResults.id, { onDelete: 'set null' }),
+  leadId: varchar("lead_id").references(() => leads.id, { onDelete: 'set null' }),
   status: text("status").notNull().default("queued"), // queued/running/succeeded/failed
   startedAt: timestamp("started_at"),
   finishedAt: timestamp("finished_at"),
   context: jsonb("context"),
   createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    // Performance indexes for common queries
+    statusIdx: index("workflow_runs_status_idx").on(table.status),
+    workflowVersionIdIdx: index("workflow_runs_workflow_version_id_idx").on(table.workflowVersionId),
+    createdAtIdx: index("workflow_runs_created_at_idx").on(table.createdAt),
+    startedAtIdx: index("workflow_runs_started_at_idx").on(table.startedAt),
+    // Composite index for version + status queries
+    versionStatusIdx: index("workflow_runs_version_status_idx").on(table.workflowVersionId, table.status),
+  };
 });
 
 export const workflowRunSteps = pgTable("workflow_run_steps", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  runId: varchar("run_id").notNull().references(() => workflowRuns.id),
+  runId: varchar("run_id").notNull().references(() => workflowRuns.id, { onDelete: 'cascade' }),
   stepKey: text("step_key").notNull(),
   type: text("type").notNull(),
   status: text("status").notNull(),
@@ -146,6 +165,17 @@ export const workflowRunSteps = pgTable("workflow_run_steps", {
   startedAt: timestamp("started_at"),
   finishedAt: timestamp("finished_at"),
   attempt: integer("attempt").notNull().default(1),
+}, (table) => {
+  return {
+    // Performance indexes for step queries
+    runIdIdx: index("workflow_run_steps_run_id_idx").on(table.runId),
+    statusIdx: index("workflow_run_steps_status_idx").on(table.status),
+    stepKeyIdx: index("workflow_run_steps_step_key_idx").on(table.stepKey),
+    typeIdx: index("workflow_run_steps_type_idx").on(table.type),
+    startedAtIdx: index("workflow_run_steps_started_at_idx").on(table.startedAt),
+    // Composite index for run + step key queries (common for workflow execution)
+    runStepIdx: index("workflow_run_steps_run_step_idx").on(table.runId, table.stepKey),
+  };
 });
 
 export const insertUserSchema = createInsertSchema(users).pick({

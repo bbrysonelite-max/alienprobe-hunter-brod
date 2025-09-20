@@ -15,6 +15,128 @@ import { logger } from "../logger";
 import { stepRegistry, type StepContext, type StepResult, type WorkflowStepConfig } from "./steps";
 import type { WorkflowVersion, WorkflowRun, WorkflowRunStep, InsertWorkflowRun, InsertWorkflowRunStep } from "@shared/schema";
 
+// Import SafeExpressionEvaluator from steps module for secure condition evaluation
+class SafeExpressionEvaluator {
+  private static readonly ALLOWED_OPERATORS = ['===', '!==', '==', '!=', '>', '<', '>=', '<=', '&&', '||'];
+  private static readonly ALLOWED_LITERALS = /^(true|false|null|undefined|\d+(\.\d+)?|"[^"]*"|'[^']*')$/;
+  private static readonly ALLOWED_PROPERTIES = /^(data|metadata)\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$/;
+
+  static evaluateCondition(condition: string, context: { data: any; metadata: any }): boolean {
+    try {
+      const sanitized = this.sanitizeExpression(condition.trim());
+      
+      if (!sanitized.isValid) {
+        throw new Error(`Invalid condition expression: ${sanitized.error}`);
+      }
+
+      return this.parseAndEvaluate(sanitized.expression, context);
+    } catch (error) {
+      throw new Error(`Expression evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private static sanitizeExpression(expr: string): { isValid: boolean; expression: string; error?: string } {
+    expr = expr.replace(/\s+/g, ' ').trim();
+
+    if (expr.includes('eval') || expr.includes('Function') || expr.includes('__proto__') || 
+        expr.includes('constructor') || expr.includes('prototype')) {
+      return { isValid: false, expression: '', error: 'Dangerous expression patterns detected' };
+    }
+
+    const tokens = this.tokenize(expr);
+    for (const token of tokens) {
+      if (!this.isValidToken(token)) {
+        return { isValid: false, expression: '', error: `Invalid token: ${token}` };
+      }
+    }
+
+    return { isValid: true, expression: expr };
+  }
+
+  private static tokenize(expr: string): string[] {
+    return expr.split(/\s*(===|!==|==|!=|>=|<=|>|<|&&|\|\||[()\s])\s*/).filter(token => token.trim() !== '');
+  }
+
+  private static isValidToken(token: string): boolean {
+    if (this.ALLOWED_OPERATORS.includes(token)) return true;
+    if (this.ALLOWED_LITERALS.test(token)) return true;
+    if (this.ALLOWED_PROPERTIES.test(token)) return true;
+    if (token === '(' || token === ')') return true;
+    return false;
+  }
+
+  private static parseAndEvaluate(expr: string, context: { data: any; metadata: any }): boolean {
+    let evaluatedExpr = expr;
+    
+    evaluatedExpr = evaluatedExpr.replace(/\bdata\.([a-zA-Z_][a-zA-Z0-9_.]*)/g, (match, prop) => {
+      const value = this.getNestedProperty(context.data, prop);
+      return JSON.stringify(value);
+    });
+    
+    evaluatedExpr = evaluatedExpr.replace(/\bmetadata\.([a-zA-Z_][a-zA-Z0-9_.]*)/g, (match, prop) => {
+      const value = this.getNestedProperty(context.metadata, prop);
+      return JSON.stringify(value);
+    });
+
+    try {
+      const result = this.evaluateSimpleComparison(evaluatedExpr);
+      return Boolean(result);
+    } catch (error) {
+      throw new Error(`Failed to evaluate expression: ${evaluatedExpr}`);
+    }
+  }
+
+  private static getNestedProperty(obj: any, path: string): any {
+    return path.split('.').reduce((current, prop) => {
+      return current && typeof current === 'object' ? current[prop] : undefined;
+    }, obj);
+  }
+
+  private static evaluateSimpleComparison(expr: string): boolean {
+    const comparisonMatch = expr.match(/^(.+?)\s*(===|!==|==|!=|>=|<=|>|<)\s*(.+)$/);
+    
+    if (comparisonMatch) {
+      const [, left, operator, right] = comparisonMatch;
+      const leftValue = this.parseValue(left.trim());
+      const rightValue = this.parseValue(right.trim());
+      
+      switch (operator) {
+        case '===': return leftValue === rightValue;
+        case '!==': return leftValue !== rightValue;
+        case '==': return leftValue == rightValue;
+        case '!=': return leftValue != rightValue;
+        case '>': return leftValue > rightValue;
+        case '<': return leftValue < rightValue;
+        case '>=': return leftValue >= rightValue;
+        case '<=': return leftValue <= rightValue;
+        default: return false;
+      }
+    }
+    
+    const value = this.parseValue(expr);
+    return Boolean(value);
+  }
+
+  private static parseValue(value: string): any {
+    value = value.trim();
+    
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    if (value === 'null') return null;
+    if (value === 'undefined') return undefined;
+    
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      return value.slice(1, -1);
+    }
+    
+    if (/^\d+(\.\d+)?$/.test(value)) {
+      return parseFloat(value);
+    }
+    
+    return value;
+  }
+}
+
 // =================== CORE INTERFACES ===================
 
 /**
@@ -662,38 +784,30 @@ export class WorkflowExecutor {
   }
 
   /**
-   * Evaluate simple condition expressions
+   * Evaluate simple condition expressions using secure expression evaluator
    */
   private async evaluateCondition(
     condition: string,
     context: WorkflowExecutionContext
   ): Promise<boolean> {
     try {
-      // Simple expression evaluation for conditions like:
-      // "status === 'success'"
-      // "data.score > 0.8"
-      // "outputs.hasError === false"
-      
-      // Create safe evaluation context
+      // Use safe expression evaluator instead of Function() to prevent code injection
       const evalContext = {
         data: context.data,
         metadata: context.metadata
       };
 
-      // Basic condition parsing and evaluation
-      // This is a simplified implementation - in production you might want to use
-      // a proper expression parser like jsep or similar
+      const result = SafeExpressionEvaluator.evaluateCondition(condition, evalContext);
       
-      // Replace variable references
-      let expr = condition.replace(/\bdata\./g, 'evalContext.data.');
-      expr = expr.replace(/\bmetadata\./g, 'evalContext.metadata.');
-
-      // Safe evaluation (in production, consider using a sandboxed evaluator)
-      const result = Function('evalContext', `return ${expr}`)(evalContext);
+      logger.info('Condition evaluation completed safely', {
+        runId: context.runId,
+        condition,
+        result
+      });
       
-      return Boolean(result);
+      return result;
     } catch (error) {
-      logger.warn('Condition evaluation failed, defaulting to false', {
+      logger.error('Secure condition evaluation failed, defaulting to false', {
         runId: context.runId,
         condition,
         error: error instanceof Error ? error.message : String(error)

@@ -73,7 +73,7 @@ class Logger {
     }
   }
 
-  private log(level: LogLevel, levelName: string, message: string, metadata?: Record<string, any>, error?: Error): void {
+  private log(level: LogLevel, levelName: string, message: string, metadata?: Record<string, unknown>, error?: Error): void {
     if (!this.shouldLog(level)) return;
 
     const entry: LogEntry = {

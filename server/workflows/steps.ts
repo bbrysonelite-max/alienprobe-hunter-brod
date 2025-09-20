@@ -1,5 +1,56 @@
 import { z } from "zod";
 import { classifyEmailDomain, shouldFlagLead, getFlaggingReason } from "../utils/emailDomainFilter";
+import { URL } from "url";
+import { createHash } from "crypto";
+
+// Strong typing for workflow context data structure
+export interface WorkflowContextData {
+  businessName?: string;
+  website?: string;
+  email?: string;
+  contactName?: string;
+  scanData?: unknown;
+  previousStepResults?: Record<string, unknown>;
+  leadId?: string;
+  scanId?: string;
+  workflowId?: string;
+  // Allow additional properties while maintaining type safety
+  [key: string]: unknown;
+}
+
+// Logger metadata with specific workflow-related fields
+export interface LogMetadata {
+  stepKey?: string;
+  stepType?: string;
+  workflowId?: string;
+  runId?: string;
+  attempt?: number;
+  duration?: number;
+  status?: string;
+  error?: string;
+  // Allow additional metadata while maintaining type safety
+  [key: string]: unknown;
+}
+
+// Step configuration with better typing
+export interface StepConfig {
+  // Common step configuration properties
+  timeout?: number;
+  retries?: number;
+  enabled?: boolean;
+  // Allow step-specific configuration
+  [key: string]: unknown;
+}
+
+// Step outputs with structured types
+export interface StepOutputs {
+  success?: boolean;
+  data?: unknown;
+  error?: string;
+  nextStep?: string;
+  // Allow additional outputs
+  [key: string]: unknown;
+}
 
 /**
  * Context passed to each step during workflow execution
@@ -12,11 +63,15 @@ export interface StepContext {
   /** Optional lead ID for lead-related workflows */
   leadId?: string;
   /** Shared context data that persists across steps */
-  data: Record<string, any>;
+  data: WorkflowContextData;
   /** Storage interface for database operations */
-  storage: any; // TODO: Import proper storage interface
+  storage: import('../storage').IStorage;
   /** Logger instance for step logging */
-  logger: any; // TODO: Import proper logger interface
+  logger: {
+    info: (message: string, meta?: LogMetadata) => void;
+    warn: (message: string, meta?: LogMetadata) => void;
+    error: (message: string, meta?: LogMetadata) => void;
+  };
 }
 
 /**
@@ -24,9 +79,9 @@ export interface StepContext {
  */
 export interface StepResult {
   /** Context updates to merge into workflow context */
-  updates?: Record<string, any>;
+  updates?: Partial<WorkflowContextData>;
   /** Step output data for subsequent steps */
-  outputs?: Record<string, any>;
+  outputs?: StepOutputs;
 }
 
 /**
@@ -38,7 +93,7 @@ export interface WorkflowStepConfig {
   /** Step type identifier */
   type: string;
   /** Step-specific configuration */
-  config: Record<string, any>;
+  config: StepConfig;
   /** Optional step name for display */
   name?: string;
   /** Optional step description */
@@ -48,11 +103,11 @@ export interface WorkflowStepConfig {
 /**
  * Definition of a step type in the registry
  */
-export interface StepDefinition {
+export interface StepDefinition<TConfig = StepConfig> {
   /** Zod schema for validating step configuration */
-  configSchema: z.ZodSchema<any>;
+  configSchema: z.ZodSchema<TConfig>;
   /** Function to execute the step */
-  run: (context: StepContext, config: any) => Promise<StepResult>;
+  run: (context: StepContext, config: TConfig) => Promise<StepResult>;
   /** Optional step type description */
   description?: string;
 }
@@ -79,6 +134,261 @@ async function safeExecute<T>(
   }
 }
 
+// =================== SECURITY UTILITIES ===================
+
+/**
+ * URL Security Validator - Prevents SSRF attacks
+ */
+class URLSecurityValidator {
+  private static readonly PRIVATE_IP_RANGES = [
+    /^10\./,
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+    /^192\.168\./,
+    /^127\./,
+    /^169\.254\./,
+    /^::1$/,
+    /^fc00:/,
+    /^fe80:/,
+    /^localhost$/i
+  ];
+
+  private static readonly ALLOWED_SCHEMES = ['http:', 'https:'];
+  
+  private static readonly BLOCKED_DOMAINS = [
+    'localhost',
+    'metadata.google.internal',
+    '169.254.169.254',
+    'metadata.aws.internal'
+  ];
+
+  /**
+   * Validates URL for SSRF vulnerabilities
+   */
+  static async validateURL(urlString: string): Promise<{ isValid: boolean; error?: string; hostname?: string }> {
+    try {
+      const url = new URL(urlString);
+      
+      // Check scheme
+      if (!this.ALLOWED_SCHEMES.includes(url.protocol)) {
+        return { isValid: false, error: `Unsupported protocol: ${url.protocol}` };
+      }
+
+      // Check blocked domains
+      const hostname = url.hostname.toLowerCase();
+      if (this.BLOCKED_DOMAINS.includes(hostname)) {
+        return { isValid: false, error: `Blocked domain: ${hostname}` };
+      }
+
+      // Check for private IP ranges
+      if (this.isPrivateIP(hostname)) {
+        return { isValid: false, error: `Private IP address not allowed: ${hostname}` };
+      }
+
+      // Additional DNS resolution check to prevent bypasses
+      try {
+        const dns = await import('dns');
+        const addresses = await new Promise<string[]>((resolve, reject) => {
+          dns.resolve4(hostname, (err, addresses) => {
+            if (err) {
+              // If DNS resolution fails, still allow the request for legitimate domains
+              resolve([]);
+            } else {
+              resolve(addresses);
+            }
+          });
+        });
+
+        // Check resolved IPs for private ranges
+        for (const ip of addresses) {
+          if (this.isPrivateIP(ip)) {
+            return { isValid: false, error: `Domain resolves to private IP: ${ip}` };
+          }
+        }
+      } catch (dnsError) {
+        // DNS check failed, but allow request to proceed for legitimate domains
+        // This prevents DNS failures from blocking legitimate requests
+      }
+
+      return { isValid: true, hostname };
+    } catch (error) {
+      return { isValid: false, error: `Invalid URL format: ${error instanceof Error ? error.message : 'Unknown error'}` };
+    }
+  }
+
+  /**
+   * Check if an IP address or hostname is in private ranges
+   */
+  private static isPrivateIP(address: string): boolean {
+    return this.PRIVATE_IP_RANGES.some(pattern => pattern.test(address));
+  }
+}
+
+/**
+ * Safe Expression Evaluator - Replaces Function() for edge conditions
+ */
+class SafeExpressionEvaluator {
+  private static readonly ALLOWED_OPERATORS = ['===', '!==', '==', '!=', '>', '<', '>=', '<=', '&&', '||'];
+  private static readonly ALLOWED_LITERALS = /^(true|false|null|undefined|\d+(\.\d+)?|"[^"]*"|'[^']*')$/;
+  private static readonly ALLOWED_PROPERTIES = /^(data|metadata)\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$/;
+
+  /**
+   * Safely evaluate simple boolean expressions for workflow conditions
+   */
+  static evaluateCondition(condition: string, context: { data: any; metadata: any }): boolean {
+    try {
+      // Sanitize the condition string
+      const sanitized = this.sanitizeExpression(condition.trim());
+      
+      if (!sanitized.isValid) {
+        throw new Error(`Invalid condition expression: ${sanitized.error}`);
+      }
+
+      // Parse and evaluate the expression safely
+      return this.parseAndEvaluate(sanitized.expression, context);
+    } catch (error) {
+      throw new Error(`Expression evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Sanitize expression to ensure it only contains safe operations
+   */
+  private static sanitizeExpression(expr: string): { isValid: boolean; expression: string; error?: string } {
+    // Remove extra whitespace
+    expr = expr.replace(/\s+/g, ' ').trim();
+
+    // Check for dangerous patterns
+    if (expr.includes('eval') || expr.includes('Function') || expr.includes('__proto__') || 
+        expr.includes('constructor') || expr.includes('prototype')) {
+      return { isValid: false, expression: '', error: 'Dangerous expression patterns detected' };
+    }
+
+    // Basic validation for allowed patterns
+    const tokens = this.tokenize(expr);
+    for (const token of tokens) {
+      if (!this.isValidToken(token)) {
+        return { isValid: false, expression: '', error: `Invalid token: ${token}` };
+      }
+    }
+
+    return { isValid: true, expression: expr };
+  }
+
+  /**
+   * Tokenize expression into manageable parts
+   */
+  private static tokenize(expr: string): string[] {
+    // Simple tokenization - split on operators and whitespace while preserving structure
+    return expr.split(/\s*(===|!==|==|!=|>=|<=|>|<|&&|\|\||[()\s])\s*/).filter(token => token.trim() !== '');
+  }
+
+  /**
+   * Validate individual tokens
+   */
+  private static isValidToken(token: string): boolean {
+    if (this.ALLOWED_OPERATORS.includes(token)) return true;
+    if (this.ALLOWED_LITERALS.test(token)) return true;
+    if (this.ALLOWED_PROPERTIES.test(token)) return true;
+    if (token === '(' || token === ')') return true;
+    return false;
+  }
+
+  /**
+   * Parse and evaluate expression using safe evaluation
+   */
+  private static parseAndEvaluate(expr: string, context: { data: any; metadata: any }): boolean {
+    // For now, implement a simple recursive descent parser for basic comparisons
+    // This is a simplified implementation - in production, consider using a proper expression parser
+    
+    // Replace property access with actual values
+    let evaluatedExpr = expr;
+    
+    // Replace data and metadata references
+    evaluatedExpr = evaluatedExpr.replace(/\bdata\.([a-zA-Z_][a-zA-Z0-9_.]*)/g, (match, prop) => {
+      const value = this.getNestedProperty(context.data, prop);
+      return JSON.stringify(value);
+    });
+    
+    evaluatedExpr = evaluatedExpr.replace(/\bmetadata\.([a-zA-Z_][a-zA-Z0-9_.]*)/g, (match, prop) => {
+      const value = this.getNestedProperty(context.metadata, prop);
+      return JSON.stringify(value);
+    });
+
+    // Simple evaluation for basic comparisons
+    // This is a basic implementation - extend as needed for more complex expressions
+    try {
+      // Only allow specific safe evaluation patterns
+      const result = this.evaluateSimpleComparison(evaluatedExpr);
+      return Boolean(result);
+    } catch (error) {
+      throw new Error(`Failed to evaluate expression: ${evaluatedExpr}`);
+    }
+  }
+
+  /**
+   * Get nested property safely
+   */
+  private static getNestedProperty(obj: any, path: string): any {
+    return path.split('.').reduce((current, prop) => {
+      return current && typeof current === 'object' ? current[prop] : undefined;
+    }, obj);
+  }
+
+  /**
+   * Evaluate simple comparison expressions
+   */
+  private static evaluateSimpleComparison(expr: string): boolean {
+    // Handle simple cases like: "success" === "success", true === true, etc.
+    const comparisonMatch = expr.match(/^(.+?)\s*(===|!==|==|!=|>=|<=|>|<)\s*(.+)$/);
+    
+    if (comparisonMatch) {
+      const [, left, operator, right] = comparisonMatch;
+      const leftValue = this.parseValue(left.trim());
+      const rightValue = this.parseValue(right.trim());
+      
+      switch (operator) {
+        case '===': return leftValue === rightValue;
+        case '!==': return leftValue !== rightValue;
+        case '==': return leftValue == rightValue;
+        case '!=': return leftValue != rightValue;
+        case '>': return leftValue > rightValue;
+        case '<': return leftValue < rightValue;
+        case '>=': return leftValue >= rightValue;
+        case '<=': return leftValue <= rightValue;
+        default: return false;
+      }
+    }
+    
+    // Handle boolean values
+    const value = this.parseValue(expr);
+    return Boolean(value);
+  }
+
+  /**
+   * Parse string value to appropriate type
+   */
+  private static parseValue(value: string): any {
+    value = value.trim();
+    
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    if (value === 'null') return null;
+    if (value === 'undefined') return undefined;
+    
+    // Handle quoted strings
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      return value.slice(1, -1);
+    }
+    
+    // Handle numbers
+    if (/^\d+(\.\d+)?$/.test(value)) {
+      return parseFloat(value);
+    }
+    
+    return value;
+  }
+}
+
 // =================== STEP IMPLEMENTATIONS ===================
 
 /**
@@ -95,6 +405,19 @@ const fetchWebsiteSchema = z.object({
 async function fetchWebsiteStep(context: StepContext, config: z.infer<typeof fetchWebsiteSchema>): Promise<StepResult> {
   return safeExecute(context, 'fetchWebsite', async () => {
     context.logger?.info(`Fetching website: ${config.url}`, { runId: context.runId });
+
+    // SECURITY: Validate URL against SSRF attacks
+    const urlValidation = await URLSecurityValidator.validateURL(config.url);
+    if (!urlValidation.isValid) {
+      context.logger?.error(`SSRF protection blocked URL: ${config.url}`, { 
+        runId: context.runId,
+        error: urlValidation.error,
+        hostname: urlValidation.hostname
+      });
+      throw new Error(`URL blocked for security reasons: ${urlValidation.error}`);
+    }
+
+    context.logger?.info(`URL validation passed for: ${urlValidation.hostname}`, { runId: context.runId });
 
     // Use fetch with timeout and proper headers
     const controller = new AbortController();
