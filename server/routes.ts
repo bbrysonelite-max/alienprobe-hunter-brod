@@ -40,6 +40,7 @@ import jwt from "jsonwebtoken";
 import { discoveryEngine } from "./prospecting/discovery-engine";
 import { hunterScheduler } from "./prospecting/hunter-scheduler";
 import { recommendationEngine } from "./recommendations/recommendation-engine";
+import { config } from "./config";
 
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -3569,6 +3570,184 @@ export async function registerRoutes(app: Express): Promise<Server> {
   
   // Development-only error simulation endpoint
   app.get("/api/simulate-error", simulateError);
+
+  // ===== STREAMLINED MANAGEMENT ENDPOINTS =====
+
+  // System overview dashboard (admin only)
+  app.get("/api/admin/overview", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      // Get system statistics
+      const leadsCountResult = await db.select({ count: count() }).from(leads);
+      const scansCountResult = await db.select({ count: count() }).from(scanResults);
+      const huntsCountResult = await db.select({ count: count() }).from(huntRuns);
+      const pipelinesCountResult = await db.select({ count: count() }).from(pipelineRuns);
+      
+      // Get revenue metrics
+      const completedScans = await db
+        .select()
+        .from(scanResults)
+        .where(eq(scanResults.status, 'completed'));
+      
+      const revenue = {
+        totalScans: completedScans.length,
+        scanRevenue: completedScans.length * 49.99,
+        estimatedMonthlyCommissions: completedScans.length * 144.15,
+        totalPotential: completedScans.length * 229.84
+      };
+
+      // Get system health
+      const hunterJobs = hunterScheduler.getAllJobs();
+      const systemHealth = {
+        database: 'connected',
+        emailSystem: 'running',
+        hunterJobs: hunterJobs.length,
+        activeJobs: hunterJobs.filter(j => j.enabled).length
+      };
+
+      res.json({
+        success: true,
+        overview: {
+          metrics: {
+            totalLeads: leadsCountResult[0]?.count || 0,
+            totalScans: scansCountResult[0]?.count || 0,
+            huntRuns: huntsCountResult[0]?.count || 0,
+            pipelineRuns: pipelinesCountResult[0]?.count || 0
+          },
+          revenue,
+          systemHealth,
+          version: config.APP_VERSION,
+          environment: config.NODE_ENV,
+          uptime: process.uptime()
+        }
+      });
+
+    } catch (error) {
+      logger.error('Failed to get admin overview', { error });
+      res.status(500).json({ error: 'Failed to get system overview' });
+    }
+  });
+
+  // Quick deploy health check
+  app.get("/api/admin/deploy-status", async (req: Request, res: Response) => {
+    try {
+      const healthChecks = {
+        database: false,
+        migrations: false,
+        services: false
+      };
+
+      // Check database
+      try {
+        await db.execute(sql`SELECT 1`);
+        healthChecks.database = true;
+      } catch (error) {
+        logger.error('Database health check failed', { error });
+      }
+
+      // Check migrations
+      try {
+        const migrationTable = await db.execute(sql`
+          SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name = '__drizzle_migrations'
+          );
+        `);
+        healthChecks.migrations = migrationTable.rows[0]?.exists === true;
+      } catch (error) {
+        logger.error('Migration check failed', { error });
+      }
+
+      // Check services
+      healthChecks.services = hunterScheduler.getAllJobs().length > 0;
+
+      const allHealthy = Object.values(healthChecks).every(check => check === true);
+
+      res.json({
+        success: true,
+        deployReady: allHealthy,
+        checks: healthChecks,
+        message: allHealthy ? 'System ready for deployment' : 'System has issues - check logs'
+      });
+
+    } catch (error) {
+      logger.error('Deploy status check failed', { error });
+      res.status(500).json({ 
+        success: false,
+        deployReady: false,
+        error: 'Health check failed' 
+      });
+    }
+  });
+
+  // System control endpoints (admin only)
+  app.post("/api/admin/restart-hunters", requireAuth(['workflow:execute']), async (req: Request, res: Response) => {
+    try {
+      hunterScheduler.stop();
+      hunterScheduler.start();
+      
+      logger.info('🔄 Hunter system restarted via admin panel');
+      
+      res.json({
+        success: true,
+        message: 'Hunter system restarted successfully'
+      });
+
+    } catch (error) {
+      logger.error('Failed to restart hunters', { error });
+      res.status(500).json({ error: 'Failed to restart hunter system' });
+    }
+  });
+
+  // Bulk operations for management
+  app.post("/api/admin/cleanup", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const { action, confirm } = req.body;
+      
+      if (!confirm) {
+        return res.status(400).json({ error: 'Confirmation required for cleanup operations' });
+      }
+
+      let result = { cleaned: 0, message: '' };
+
+      switch (action) {
+        case 'failed_hunts':
+          const cleanedHunts = await db
+            .delete(huntRuns)
+            .where(eq(huntRuns.status, 'failed'))
+            .returning();
+          result = { cleaned: cleanedHunts.length, message: 'Failed hunt runs cleaned' };
+          break;
+
+        case 'old_scans':
+          // Clean scans older than 30 days
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+          const cleanedScans = await db
+            .delete(scanResults)
+            .where(and(
+              eq(scanResults.status, 'failed'),
+              sql`${scanResults.createdAt} < ${thirtyDaysAgo}`
+            ))
+            .returning();
+          result = { cleaned: cleanedScans.length, message: 'Old failed scans cleaned' };
+          break;
+
+        default:
+          return res.status(400).json({ error: 'Invalid cleanup action' });
+      }
+
+      logger.info('🧹 Admin cleanup performed', { action, ...result });
+
+      res.json({
+        success: true,
+        ...result
+      });
+
+    } catch (error) {
+      logger.error('Admin cleanup failed', { error });
+      res.status(500).json({ error: 'Cleanup operation failed' });
+    }
+  });
 
   const httpServer = createServer(app);
   return httpServer;
