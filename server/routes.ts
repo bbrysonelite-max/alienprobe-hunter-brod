@@ -22,6 +22,8 @@ import {
   toolRecommendations,
   huntRuns,
   pipelineRuns,
+  systemGoals,
+  insertSystemGoalSchema,
   type Workflow,
   type WorkflowVersion,
   type WorkflowRun,
@@ -163,8 +165,20 @@ const requireAuth = (requiredPermissions: string[] = []) => {
     let authMethod = 'none';
 
     try {
+      // Development bypass for localhost
+      if (config.NODE_ENV === 'development' && (clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === 'localhost')) {
+        authenticatedUser = {
+          id: 'dev-admin',
+          role: 'admin',
+          permissions: ROLE_PERMISSIONS.admin,
+          issuedAt: Date.now() / 1000
+        };
+        authMethod = 'development-bypass';
+        logger.info('Development authentication bypass granted', { clientIp, endpoint: req.path });
+      }
+      
       // Method 1: Secure API Key authentication
-      if (apiKey && process.env.ADMIN_API_KEY) {
+      if (!authenticatedUser && apiKey && process.env.ADMIN_API_KEY) {
         if (validateApiKey(apiKey, process.env.ADMIN_API_KEY)) {
           authenticatedUser = {
             id: 'api-key-admin',

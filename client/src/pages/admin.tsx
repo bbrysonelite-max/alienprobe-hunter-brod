@@ -131,10 +131,13 @@ export default function AdminPage() {
   // Set goal mutation
   const setGoal = useMutation({
     mutationFn: async (data: { goalType: string; targetValue: number }) => {
-      return apiRequest('/api/admin/goals', {
+      const response = await fetch('/api/admin/goals', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
+      if (!response.ok) throw new Error('Failed to set goal');
+      return response.json();
     },
     onSuccess: () => {
       toast({ title: 'Success', description: 'Daily goal updated successfully' });
