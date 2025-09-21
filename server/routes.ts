@@ -3622,7 +3622,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
     } catch (error) {
-      logger.error('Failed to get admin overview', { error });
+      logger.error('Failed to get admin overview', error as Error);
       res.status(500).json({ error: 'Failed to get system overview' });
     }
   });
@@ -3641,7 +3641,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await db.execute(sql`SELECT 1`);
         healthChecks.database = true;
       } catch (error) {
-        logger.error('Database health check failed', { error });
+        logger.error('Database health check failed', error as Error);
       }
 
       // Check migrations
@@ -3655,7 +3655,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         `);
         healthChecks.migrations = migrationTable.rows[0]?.exists === true;
       } catch (error) {
-        logger.error('Migration check failed', { error });
+        logger.error('Migration check failed', error as Error);
       }
 
       // Check services
@@ -3671,7 +3671,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
     } catch (error) {
-      logger.error('Deploy status check failed', { error });
+      logger.error('Deploy status check failed', error as Error);
       res.status(500).json({ 
         success: false,
         deployReady: false,
@@ -3694,7 +3694,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
     } catch (error) {
-      logger.error('Failed to restart hunters', { error });
+      logger.error('Failed to restart hunters', error as Error);
       res.status(500).json({ error: 'Failed to restart hunter system' });
     }
   });
@@ -3744,7 +3744,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
     } catch (error) {
-      logger.error('Admin cleanup failed', { error });
+      logger.error('Admin cleanup failed', error as Error);
       res.status(500).json({ error: 'Cleanup operation failed' });
     }
   });
