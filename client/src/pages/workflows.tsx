@@ -102,7 +102,7 @@ export default function WorkflowsPage() {
   
   // State management
   const [searchTerm, setSearchTerm] = useState("");
-  const [businessTypeFilter, setBusinessTypeFilter] = useState<string>("");
+  const [businessTypeFilter, setBusinessTypeFilter] = useState<string>("all");
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowWithVersions | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<WorkflowVersion | null>(null);
   const [selectedRun, setSelectedRun] = useState<WorkflowRunWithDetails | null>(null);
@@ -262,7 +262,7 @@ export default function WorkflowsPage() {
   const filteredWorkflows = workflows.filter((workflow: WorkflowWithVersions) => {
     const matchesSearch = workflow.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          (workflow.businessType || "").toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesBusinessType = !businessTypeFilter || workflow.businessType === businessTypeFilter;
+    const matchesBusinessType = businessTypeFilter === "all" || workflow.businessType === businessTypeFilter;
     return matchesSearch && matchesBusinessType;
   });
 
@@ -389,7 +389,7 @@ export default function WorkflowsPage() {
                       <SelectValue placeholder="All Business Types" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All Business Types</SelectItem>
+                      <SelectItem value="all">All Business Types</SelectItem>
                       {businessTypes.map((type) => (
                         <SelectItem key={type} value={type}>
                           {type.charAt(0).toUpperCase() + type.slice(1)}
@@ -397,12 +397,12 @@ export default function WorkflowsPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                  {(searchTerm || businessTypeFilter) && (
+                  {(searchTerm || businessTypeFilter !== "all") && (
                     <Button 
                       variant="outline" 
                       onClick={() => {
                         setSearchTerm("");
-                        setBusinessTypeFilter("");
+                        setBusinessTypeFilter("all");
                       }}
                       data-testid="button-clear-filters"
                     >
@@ -446,7 +446,7 @@ export default function WorkflowsPage() {
                     <Database className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
                     <h3 className="text-lg font-semibold mb-2">No workflows found</h3>
                     <p className="text-muted-foreground mb-4">
-                      {searchTerm || businessTypeFilter ? 
+                      {searchTerm || businessTypeFilter !== "all" ? 
                         "No workflows match your current filters." :
                         "Get started by creating your first workflow."
                       }
