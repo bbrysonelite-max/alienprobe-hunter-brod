@@ -3,8 +3,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
+import { apiRequest } from '@/lib/queryClient';
 import { 
   Activity, 
   Database, 
@@ -14,7 +17,9 @@ import {
   Settings, 
   TrendingUp,
   Users,
-  Zap
+  Zap,
+  Target,
+  Edit
 } from 'lucide-react';
 
 interface SystemOverview {
@@ -51,9 +56,20 @@ interface DeployStatus {
   message: string;
 }
 
+interface SystemGoal {
+  id: string;
+  goalType: string;
+  targetValue: number;
+  currentValue: number;
+  resetDate: string;
+  isActive: boolean;
+}
+
 export default function AdminPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [editingGoal, setEditingGoal] = useState(false);
+  const [newTarget, setNewTarget] = useState(5);
 
   // System overview query
   const { data: overview, isLoading } = useQuery<{ success: boolean; overview: SystemOverview }>({
@@ -65,6 +81,12 @@ export default function AdminPage() {
   const { data: deployStatus } = useQuery<{ success: boolean } & DeployStatus>({
     queryKey: ['/api/admin/deploy-status'],
     refetchInterval: 60000 // Refresh every minute
+  });
+
+  // Goals query
+  const { data: goalsData } = useQuery<{ success: boolean; goals: SystemGoal[] }>({
+    queryKey: ['/api/admin/goals'],
+    refetchInterval: 30000 // Refresh every 30 seconds
   });
 
   // Restart hunters mutation
@@ -106,6 +128,24 @@ export default function AdminPage() {
     }
   });
 
+  // Set goal mutation
+  const setGoal = useMutation({
+    mutationFn: async (data: { goalType: string; targetValue: number }) => {
+      return apiRequest('/api/admin/goals', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+    onSuccess: () => {
+      toast({ title: 'Success', description: 'Daily goal updated successfully' });
+      queryClient.invalidateQueries({ queryKey: ['/api/admin/goals'] });
+      setEditingGoal(false);
+    },
+    onError: () => {
+      toast({ title: 'Error', description: 'Failed to update daily goal', variant: 'destructive' });
+    }
+  });
+
   const formatUptime = (seconds: number) => {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
@@ -128,6 +168,12 @@ export default function AdminPage() {
   }
 
   const data = overview?.overview;
+  const goals = goalsData?.goals || [];
+  const dailyGoal = goals.find(g => g.goalType === 'daily_scans');
+
+  const handleSaveGoal = () => {
+    setGoal.mutate({ goalType: 'daily_scans', targetValue: newTarget });
+  };
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -327,6 +373,134 @@ export default function AdminPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Daily Goals */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Target className="h-5 w-5" />
+            Daily Goals
+          </CardTitle>
+          <CardDescription>Set and track your daily business scanning targets</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {dailyGoal ? (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <p className="font-medium">Daily Scans Target</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl font-bold">{dailyGoal.currentValue}</span>
+                    <span className="text-muted-foreground">/ {dailyGoal.targetValue}</span>
+                  </div>
+                  <div className="w-64 bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                    <div 
+                      className="bg-blue-600 h-2 rounded-full transition-all"
+                      style={{ 
+                        width: `${Math.min((dailyGoal.currentValue / dailyGoal.targetValue) * 100, 100)}%` 
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {Math.round((dailyGoal.currentValue / dailyGoal.targetValue) * 100)}% of daily target
+                  </p>
+                </div>
+                
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setNewTarget(dailyGoal.targetValue);
+                    setEditingGoal(true);
+                  }}
+                >
+                  <Edit className="h-4 w-4 mr-2" />
+                  Edit Target
+                </Button>
+              </div>
+              
+              {editingGoal && (
+                <div className="border-t pt-4 space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="target">New Daily Target</Label>
+                    <Input
+                      id="target"
+                      type="number"
+                      min="1"
+                      value={newTarget}
+                      onChange={(e) => setNewTarget(parseInt(e.target.value) || 1)}
+                      className="w-32"
+                    />
+                  </div>
+                  
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={handleSaveGoal}
+                      disabled={setGoal.isPending}
+                    >
+                      Save Target
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setEditingGoal(false)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-6">
+              <Target className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+              <p className="text-muted-foreground mb-4">No daily goal set</p>
+              <Button
+                onClick={() => {
+                  setNewTarget(5);
+                  setEditingGoal(true);
+                }}
+              >
+                Set Daily Target
+              </Button>
+              
+              {editingGoal && (
+                <div className="mt-4 space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="target">Daily Scans Target</Label>
+                    <Input
+                      id="target"
+                      type="number"
+                      min="1"
+                      value={newTarget}
+                      onChange={(e) => setNewTarget(parseInt(e.target.value) || 1)}
+                      className="w-32 mx-auto"
+                    />
+                  </div>
+                  
+                  <div className="flex gap-2 justify-center">
+                    <Button
+                      size="sm"
+                      onClick={handleSaveGoal}
+                      disabled={setGoal.isPending}
+                    >
+                      Set Target
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setEditingGoal(false)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Revenue Breakdown */}
       <Card>

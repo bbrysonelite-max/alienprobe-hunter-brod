@@ -513,6 +513,29 @@ export type HuntRun = typeof huntRuns.$inferSelect;
 export type InsertPipelineRun = z.infer<typeof insertPipelineRunSchema>;
 export type PipelineRun = typeof pipelineRuns.$inferSelect;
 
+// ===== SYSTEM CONFIGURATION TABLES =====
+
+export const systemGoals = pgTable("system_goals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  goalType: varchar("goal_type", { length: 50 }).notNull(), // 'daily_scans', 'weekly_revenue', etc.
+  targetValue: integer("target_value").notNull(),
+  currentValue: integer("current_value").default(0).notNull(),
+  resetDate: timestamp("reset_date").defaultNow().notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull()
+});
+
+// System goals schemas
+export const insertSystemGoalSchema = createInsertSchema(systemGoals).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertSystemGoal = z.infer<typeof insertSystemGoalSchema>;
+export type SystemGoal = typeof systemGoals.$inferSelect;
+
 // ===== TOOL RECOMMENDATION TABLES (Hunter Brody Revenue Engine) =====
 
 export const toolCategories = pgTable("tool_categories", {

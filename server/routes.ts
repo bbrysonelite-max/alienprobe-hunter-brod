@@ -3749,6 +3749,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Goals management endpoints (admin only)
+  app.get("/api/admin/goals", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const goals = await db.select().from(systemGoals).where(eq(systemGoals.isActive, true));
+      
+      // Get today's completed scans to update daily goal progress
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const todayScans = await db.select({ count: count() })
+        .from(scanResults)
+        .where(and(
+          eq(scanResults.status, 'completed'),
+          gte(scanResults.createdAt, today)
+        ));
+
+      // Update daily scans goal current value
+      const dailyGoal = goals.find(g => g.goalType === 'daily_scans');
+      if (dailyGoal) {
+        await db.update(systemGoals)
+          .set({ 
+            currentValue: todayScans[0]?.count || 0,
+            updatedAt: new Date()
+          })
+          .where(eq(systemGoals.id, dailyGoal.id));
+      }
+
+      // Refetch updated goals
+      const updatedGoals = await db.select().from(systemGoals).where(eq(systemGoals.isActive, true));
+
+      res.json({
+        success: true,
+        goals: updatedGoals
+      });
+
+    } catch (error) {
+      logger.error('Failed to get goals', error as Error);
+      res.status(500).json({ error: 'Failed to fetch goals' });
+    }
+  });
+
+  app.post("/api/admin/goals", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const { goalType, targetValue } = insertSystemGoalSchema.parse(req.body);
+
+      // Update existing goal or create new one
+      const existingGoal = await db.select()
+        .from(systemGoals)
+        .where(eq(systemGoals.goalType, goalType))
+        .limit(1);
+
+      if (existingGoal.length > 0) {
+        await db.update(systemGoals)
+          .set({ 
+            targetValue,
+            updatedAt: new Date()
+          })
+          .where(eq(systemGoals.id, existingGoal[0].id));
+      } else {
+        await db.insert(systemGoals).values({
+          goalType,
+          targetValue,
+          currentValue: 0,
+          resetDate: new Date(),
+          isActive: true
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Goal updated successfully'
+      });
+
+    } catch (error) {
+      logger.error('Failed to set goal', error as Error);
+      res.status(500).json({ error: 'Failed to set goal' });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
