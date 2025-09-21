@@ -1137,7 +1137,7 @@ function WorkflowRunsTable({
                       <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">
                         {run.context && typeof run.context === 'object' 
                           ? JSON.stringify(run.context, null, 2) 
-                          : String(run.context || '')}
+                          : run.context ? String(run.context) : ''}
                       </pre>
                     </div>
                   )}
