@@ -96,6 +96,34 @@ const businessTypes = [
   "non-profit"
 ];
 
+// Status Badge Component
+const getStatusBadge = (status: string) => {
+  const variants = {
+    draft: "secondary",
+    published: "default",
+    queued: "secondary", 
+    running: "default",
+    succeeded: "default",
+    failed: "destructive",
+  } as const;
+  
+  const colors = {
+    draft: "text-yellow-600",
+    published: "text-green-600", 
+    queued: "text-blue-600",
+    running: "text-blue-600",
+    succeeded: "text-green-600",
+    failed: "text-red-600",
+  } as const;
+
+  return (
+    <Badge variant={variants[status as keyof typeof variants] || "secondary"} 
+           className={colors[status as keyof typeof colors]}>
+      {status}
+    </Badge>
+  );
+};
+
 export default function WorkflowsPage() {
   const [location, setLocation] = useLocation();
   const { toast } = useToast();
@@ -115,17 +143,17 @@ export default function WorkflowsPage() {
   // API queries
   const { data: workflows = [], isLoading: workflowsLoading, refetch: refetchWorkflows } = useQuery({
     queryKey: ["/api/workflows"],
-  });
+  }) as { data: WorkflowWithVersions[]; isLoading: boolean; refetch: () => void };
 
   const { data: workflowRunsData = [], isLoading: runsLoading } = useQuery({
     queryKey: ["/api/workflow-runs"],
     enabled: showRunsDialog && !!selectedWorkflow,
-  });
+  }) as { data: WorkflowRunWithDetails[]; isLoading: boolean };
 
   // Mutations
   const createWorkflowMutation = useMutation({
     mutationFn: (data: z.infer<typeof workflowFormSchema>) => 
-      apiRequest("/api/workflows", { method: "POST", body: data }),
+      apiRequest("POST", "/api/workflows", data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       setShowCreateDialog(false);
@@ -145,7 +173,7 @@ export default function WorkflowsPage() {
 
   const updateWorkflowMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<Workflow> }) =>
-      apiRequest(`/api/workflows/${id}`, { method: "PATCH", body: data }),
+      apiRequest("PATCH", `/api/workflows/${id}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({
@@ -164,7 +192,7 @@ export default function WorkflowsPage() {
 
   const deleteWorkflowMutation = useMutation({
     mutationFn: (id: string) => 
-      apiRequest(`/api/workflows/${id}`, { method: "DELETE" }),
+      apiRequest("DELETE", `/api/workflows/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({
@@ -183,7 +211,7 @@ export default function WorkflowsPage() {
 
   const makeDefaultMutation = useMutation({
     mutationFn: (id: string) =>
-      apiRequest(`/api/workflows/${id}/make-default`, { method: "POST" }),
+      apiRequest("POST", `/api/workflows/${id}/make-default`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({
@@ -202,7 +230,7 @@ export default function WorkflowsPage() {
 
   const createVersionMutation = useMutation({
     mutationFn: ({ workflowId, data }: { workflowId: string; data: any }) =>
-      apiRequest(`/api/workflows/${workflowId}/versions`, { method: "POST", body: data }),
+      apiRequest("POST", `/api/workflows/${workflowId}/versions`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       setShowVersionDialog(false);
@@ -222,7 +250,7 @@ export default function WorkflowsPage() {
 
   const updateVersionMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) =>
-      apiRequest(`/api/workflow-versions/${id}`, { method: "PATCH", body: data }),
+      apiRequest("PATCH", `/api/workflow-versions/${id}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({
@@ -241,7 +269,7 @@ export default function WorkflowsPage() {
 
   const publishVersionMutation = useMutation({
     mutationFn: (id: string) =>
-      apiRequest(`/api/workflow-versions/${id}/publish`, { method: "POST" }),
+      apiRequest("POST", `/api/workflow-versions/${id}/publish`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/workflows"] });
       toast({
@@ -266,32 +294,7 @@ export default function WorkflowsPage() {
     return matchesSearch && matchesBusinessType;
   });
 
-  const getStatusBadge = (status: string) => {
-    const variants = {
-      draft: "secondary",
-      published: "default",
-      queued: "secondary", 
-      running: "default",
-      succeeded: "default",
-      failed: "destructive",
-    } as const;
-    
-    const colors = {
-      draft: "text-yellow-600",
-      published: "text-green-600", 
-      queued: "text-blue-600",
-      running: "text-blue-600",
-      succeeded: "text-green-600",
-      failed: "text-red-600",
-    } as const;
-
-    return (
-      <Badge variant={variants[status as keyof typeof variants] || "secondary"} 
-             className={colors[status as keyof typeof colors]}>
-        {status}
-      </Badge>
-    );
-  };
+  // Status badge function moved to module level - see above
 
   const toggleRunExpansion = (runId: string) => {
     const newExpanded = new Set(expandedRuns);
@@ -635,7 +638,7 @@ export default function WorkflowsPage() {
               </CardHeader>
               <CardContent>
                 <WorkflowRunsTable 
-                  runs={workflowRunsData}
+                  runs={workflowRunsData as WorkflowRunWithDetails[]}
                   loading={runsLoading}
                   expandedRuns={expandedRuns}
                   onToggleExpansion={toggleRunExpansion}
@@ -699,7 +702,7 @@ export default function WorkflowsPage() {
           </DialogHeader>
           <ScrollArea className="max-h-[60vh]">
             <WorkflowRunsTable 
-              runs={workflowRunsData.filter((run: WorkflowRunWithDetails) => 
+              runs={(workflowRunsData as WorkflowRunWithDetails[]).filter((run: WorkflowRunWithDetails) => 
                 selectedWorkflow && run.workflowName === selectedWorkflow.name
               )}
               loading={runsLoading}
@@ -949,7 +952,7 @@ function VersionManager({
     enabled: !!workflow.id,
   });
 
-  const versions = workflowDetails?.data?.versions || [];
+  const versions = (workflowDetails as any)?.versions || [];
 
   return (
     <div className="space-y-6">
@@ -1132,7 +1135,7 @@ function WorkflowRunsTable({
                     <div>
                       <label className="text-sm font-medium block mb-2">Context</label>
                       <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">
-                        {JSON.stringify(run.context, null, 2)}
+                        {String(JSON.stringify(run.context, null, 2))}
                       </pre>
                     </div>
                   )}
