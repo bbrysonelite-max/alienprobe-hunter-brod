@@ -393,7 +393,7 @@ export default function WorkflowsPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Business Types</SelectItem>
-                      {businessTypes.map((type) => (
+                      {businessTypes.filter(type => type && type.trim().length > 0).map((type) => (
                         <SelectItem key={type} value={type}>
                           {type.charAt(0).toUpperCase() + type.slice(1)}
                         </SelectItem>
@@ -784,7 +784,7 @@ function CreateWorkflowDialog({
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {businessTypes.map((type) => (
+                      {businessTypes.filter(type => type && type.trim().length > 0).map((type) => (
                         <SelectItem key={type} value={type}>
                           {type.charAt(0).toUpperCase() + type.slice(1)}
                         </SelectItem>
