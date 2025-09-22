@@ -42,13 +42,14 @@ import jwt from "jsonwebtoken";
 import { discoveryEngine } from "./prospecting/discovery-engine";
 import { hunterScheduler } from "./prospecting/hunter-scheduler";
 import { recommendationEngine } from "./recommendations/recommendation-engine";
+import { businessAnalyzer } from "./analysis/business-analyzer";
 import { config } from "./config";
 
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const STRIPE_PAYMENT_LINK_URL = process.env.STRIPE_PAYMENT_LINK_URL;
-const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "4900"); // Default $49.00
+const FULL_SCAN_PRICE_AMOUNT = parseInt(process.env.FULL_SCAN_PRICE_AMOUNT || "49900"); // Default $499.00
 
 // Hunter Brody pricing optimization for maximum lead generation
 const HUNTER_PRICING = {
@@ -77,7 +78,7 @@ const HUNTER_PRICING = {
 };
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
-  apiVersion: "2025-08-27.basil" as any, // Use valid API version
+  apiVersion: "2024-06-20", // Use valid stable API version
 }) : null;
 
 const paymentsEnabled = !!STRIPE_SECRET_KEY;
@@ -380,15 +381,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
         hasEmail: !!validatedData.email,
       });
       
-      // Simulate business scanning process
+      // Create initial scan result with scanning status
       const scanResult = await storage.createScanResult({
         ...validatedData,
         status: "scanning",
         scanData: JSON.stringify({
           timestamp: new Date().toISOString(),
-          websiteAnalysis: validatedData.website ? "Website found and analyzed" : "No website provided",
-          businessScore: Math.floor(Math.random() * 100) + 1,
+          status: "analyzing",
+          progress: "Initiating Hunter Brody AI business analysis..."
         }),
+      });
+
+      // Perform real AI business analysis asynchronously
+      setImmediate(async () => {
+        try {
+          logger.info('🧠 Starting Hunter Brody AI business analysis', {
+            scanId: scanResult.id,
+            businessName: validatedData.businessName
+          });
+
+          const analysisResult = await businessAnalyzer.analyzeBusinessIntelligence({
+            businessName: validatedData.businessName,
+            website: validatedData.website || undefined,
+            email: validatedData.email || undefined
+          });
+
+          // Update scan result with AI analysis
+          const completedScanData = {
+            timestamp: new Date().toISOString(),
+            status: "completed",
+            aiAnalysis: analysisResult,
+            businessScore: analysisResult.overallScore,
+            confidence: analysisResult.confidence,
+            insights: analysisResult.businessInsights,
+            optimizationOpportunities: analysisResult.optimizationOpportunities,
+            recommendedTools: analysisResult.recommendedTools,
+            nextSteps: analysisResult.nextSteps,
+            riskFactors: analysisResult.riskFactors,
+            marketPosition: analysisResult.marketPosition,
+            competitiveAdvantage: analysisResult.competitiveAdvantage,
+            growthPotential: analysisResult.growthPotential,
+            completedAt: new Date().toISOString()
+          };
+
+          await storage.updateScanResult(scanResult.id, {
+            status: "completed",
+            scanData: JSON.stringify(completedScanData)
+          });
+
+          logger.info('✅ Hunter Brody AI analysis completed', {
+            scanId: scanResult.id,
+            businessName: validatedData.businessName,
+            overallScore: analysisResult.overallScore,
+            confidence: analysisResult.confidence
+          });
+
+        } catch (error) {
+          logger.error('❌ Business analysis failed', {
+            scanId: scanResult.id,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+
+          // Update scan with error status
+          await storage.updateScanResult(scanResult.id, {
+            status: "failed",
+            scanData: JSON.stringify({
+              timestamp: new Date().toISOString(),
+              status: "failed",
+              error: "Analysis failed - please try again",
+              failedAt: new Date().toISOString()
+            })
+          });
+        }
       });
 
       logger.info('Scan result created', { scanId: scanResult.id, status: 'scanning' });
@@ -519,7 +583,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ 
         success: true, 
         scanId: scanResult.id,
-        message: "Scan initiated successfully" 
+        message: "Hunter Brody AI business analysis initiated successfully",
+        status: "analyzing",
+        description: "Your business is being analyzed by our AI-powered optimization engine" 
       });
     } catch (error) {
       if (error instanceof z.ZodError) {

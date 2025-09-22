@@ -64,9 +64,9 @@ export class DiscoveryEngine {
     this.sources.set('google_places', new GooglePlacesSource());
     this.dailyQuotas.set('google_places', process.env.GOOGLE_PLACES_API_KEY ? 10000 : 500); // High quota for simulated
 
-    // Always enable Yelp (simulated or real based on API key)
+    // Always enable Yelp (FORCED TO MOCK per user requirement)
     this.sources.set('yelp', new YelpSource());
-    this.dailyQuotas.set('yelp', process.env.YELP_API_KEY ? 165 : 300); // High quota for simulated
+    this.dailyQuotas.set('yelp', 300); // Always mock, high quota
 
     // Always enable SerpAPI (simulated or real based on API key)
     this.sources.set('serpapi', new SerpApiSource());
@@ -77,7 +77,7 @@ export class DiscoveryEngine {
       quotas: Object.fromEntries(this.dailyQuotas),
       realAPIs: {
         googlePlaces: !!process.env.GOOGLE_PLACES_API_KEY,
-        yelp: !!process.env.YELP_API_KEY,
+        yelp: false, // Forced to mock per user requirement
         serpApi: !!process.env.SERPAPI_KEY
       }
     });
@@ -121,11 +121,20 @@ export class DiscoveryEngine {
 
         const businesses = await source.searchBusinesses(params, needed);
         
-        // Deduplicate by business name + location
-        const newBusinesses = this.deduplicateBusinesses([...allBusinesses, ...businesses]);
-        const addedCount = newBusinesses.length - allBusinesses.length;
-
-        allBusinesses.push(...businesses);
+        // Deduplicate by business name + location (handles both cross-source and intra-batch duplicates)
+        const seenKeys = new Set(allBusinesses.map(b => this.getDeduplicationKey(b)));
+        const uniqueNewBusinesses: DiscoveredBusiness[] = [];
+        
+        for (const business of businesses) {
+          const key = this.getDeduplicationKey(business);
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            uniqueNewBusinesses.push(business);
+          }
+        }
+        
+        allBusinesses.push(...uniqueNewBusinesses);
+        const addedCount = uniqueNewBusinesses.length;
         
         // Update quota usage
         this.dailyUsage.set(sourceName, used + 1);
@@ -144,11 +153,12 @@ export class DiscoveryEngine {
       }
     }
 
+    const finalBusinesses = this.deduplicateBusinesses(allBusinesses);
     const result: DiscoveryResult = {
       source: 'discovery_engine',
       searchParams: params,
-      businesses: this.deduplicateBusinesses(allBusinesses),
-      totalFound: allBusinesses.length,
+      businesses: finalBusinesses,
+      totalFound: finalBusinesses.length, // Use final deduplicated count for accuracy
       quotaUsed: totalQuotaUsed,
       timestamp: new Date()
     };
@@ -397,15 +407,16 @@ class YelpSource extends BusinessSource {
   }
 
   async searchBusinesses(params: BusinessSearchParams, maxResults: number): Promise<DiscoveredBusiness[]> {
-    logger.info('🍽️ Yelp search initiated (simulated)', { params, maxResults });
+    // FORCED TO MOCK - Do not use real Yelp API even if key exists (per user requirement)
+    logger.info('🍽️ Yelp search initiated (FORCED MOCK)', { params, maxResults });
     
-    // Simulate Yelp API discovery
+    // Always use mock data regardless of API key availability
     const mockBusinesses = this.generateYelpBusinesses(params, Math.min(maxResults, 25));
     
     // Simulate API delay
     await new Promise(resolve => setTimeout(resolve, 150));
     
-    logger.info(`✅ Yelp simulated ${mockBusinesses.length} businesses`, {
+    logger.info(`✅ Yelp MOCK generated ${mockBusinesses.length} businesses`, {
       industry: params.industry,
       location: params.location
     });
@@ -469,31 +480,215 @@ class YelpSource extends BusinessSource {
 }
 
 /**
- * SerpAPI Source (Simulated)
+ * SerpAPI Source (REAL API)
  */
 class SerpApiSource extends BusinessSource {
   private apiKey: string;
+  private isReal: boolean;
 
   constructor() {
     super();
     this.apiKey = process.env.SERPAPI_KEY || 'simulated';
+    this.isReal = !!process.env.SERPAPI_KEY;
   }
 
   async searchBusinesses(params: BusinessSearchParams, maxResults: number): Promise<DiscoveredBusiness[]> {
-    logger.info('🔍 SerpAPI search initiated (simulated)', { params, maxResults });
+    if (!this.isReal) {
+      return this.generateSerpBusinesses(params, Math.min(maxResults, 15));
+    }
+
+    logger.info('🔍 SerpAPI REAL search initiated', { params, maxResults });
     
-    // Simulate SerpAPI discovery
-    const mockBusinesses = this.generateSerpBusinesses(params, Math.min(maxResults, 15));
+    try {
+      const businesses = await this.searchRealBusinesses(params, Math.min(maxResults, 15));
+      
+      logger.info(`✅ SerpAPI REAL discovered ${businesses.length} businesses`, {
+        industry: params.industry,
+        location: params.location
+      });
+      
+      return businesses;
+    } catch (error) {
+      logger.error('❌ SerpAPI real search failed, falling back to mock', { error: error.message });
+      return this.generateSerpBusinesses(params, Math.min(maxResults, 15));
+    }
+  }
+
+  private async searchRealBusinesses(params: BusinessSearchParams, maxResults: number): Promise<DiscoveredBusiness[]> {
+    const { industry = 'business', location = 'United States', keywords = '' } = params;
     
-    // Simulate API delay
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Construct search query for business discovery
+    const query = `${industry} ${keywords} businesses in ${location} contact phone website`.trim();
     
-    logger.info(`✅ SerpAPI simulated ${mockBusinesses.length} businesses`, {
-      industry: params.industry,
-      location: params.location
+    const searchParams = new URLSearchParams({
+      api_key: this.apiKey,
+      engine: 'google',
+      q: query,
+      location: location,
+      hl: 'en',
+      gl: 'us',
+      num: Math.min(maxResults, 20).toString()
     });
+
+    // Add timeout and retry logic
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
     
-    return mockBusinesses;
+    try {
+      const response = await fetch(`https://serpapi.com/search?${searchParams}`, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`SerpAPI request failed: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.error) {
+        throw new Error(`SerpAPI error: ${data.error}`);
+      }
+
+      return this.parseSerpResults(data, params);
+    } catch (error) {
+      clearTimeout(timeoutId);
+      throw error;
+    }
+  }
+
+  private parseSerpResults(data: any, params: BusinessSearchParams): DiscoveredBusiness[] {
+    const businesses: DiscoveredBusiness[] = [];
+    
+    try {
+      const results = data.organic_results || [];
+      
+      // Handle local_results - can be object with places array or direct array
+      let localPlaces: any[] = [];
+      if (data.local_results) {
+        if (Array.isArray(data.local_results)) {
+          localPlaces = data.local_results;
+        } else if (data.local_results.places && Array.isArray(data.local_results.places)) {
+          localPlaces = data.local_results.places;
+        }
+      }
+
+      logger.info('SerpAPI parsing results', {
+        organicResults: results.length,
+        localPlaces: localPlaces.length,
+        rawLocalResults: typeof data.local_results
+      });
+
+      // Process local business results first (more relevant)
+      for (const result of localPlaces.slice(0, 10)) {
+        try {
+          const business: DiscoveredBusiness = {
+            sourceId: `serpapi_local_${result.place_id || result.position || Date.now()}`,
+            sourceName: 'serpapi',
+            businessName: result.title || result.name || 'Unknown Business',
+            website: result.website || result.link || null,
+            address: result.address || null,
+            phone: result.phone || null,
+            email: this.extractEmailFromSnippet(result.snippet || result.description),
+            industry: params.industry || 'business',
+            rating: result.rating || null,
+            reviewCount: result.reviews || result.review_count || 0,
+            priceLevel: result.price_level ? result.price_level.toString() : null,
+            description: result.snippet || result.description || `Business found via Google search`,
+            hours: result.hours ? { open_now: result.hours.open_now } : null,
+            rawData: { source: 'serpapi_real', type: 'local_result', data: result }
+          };
+          businesses.push(business);
+        } catch (parseError) {
+          logger.warn('Failed to parse local result', { error: parseError, result });
+        }
+      }
+
+      // Process organic search results for additional businesses
+      for (const result of results.slice(0, 10)) {
+        try {
+          if (this.isBusinessResult(result)) {
+            const business: DiscoveredBusiness = {
+              sourceId: `serpapi_organic_${result.position || Date.now()}`,
+              sourceName: 'serpapi',
+              businessName: result.title || 'Unknown Business',
+              website: result.link || null,
+              address: this.extractAddressFromSnippet(result.snippet),
+              phone: this.extractPhoneFromSnippet(result.snippet),
+              email: this.extractEmailFromSnippet(result.snippet),
+              industry: params.industry || 'business',
+              rating: null,
+              reviewCount: 0,
+              priceLevel: null,
+              description: result.snippet || `Business found via Google search`,
+              hours: null,
+              rawData: { source: 'serpapi_real', type: 'organic_result', data: result }
+            };
+            businesses.push(business);
+          }
+        } catch (parseError) {
+          logger.warn('Failed to parse organic result', { error: parseError, result });
+        }
+      }
+      
+      logger.info('SerpAPI parsing completed', {
+        totalBusinesses: businesses.length,
+        localBusinesses: localPlaces.length,
+        organicBusinesses: businesses.filter(b => b.sourceId.includes('organic')).length
+      });
+      
+      return businesses;
+      
+    } catch (error) {
+      logger.error('SerpAPI parsing failed completely', { error, dataKeys: Object.keys(data || {}) });
+      throw new Error(`Failed to parse SerpAPI results: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private isBusinessResult(result: any): boolean {
+    const title = (result.title || '').toLowerCase();
+    const snippet = (result.snippet || '').toLowerCase();
+    const link = (result.link || '').toLowerCase();
+    
+    // Check for business indicators
+    const businessIndicators = [
+      'contact', 'phone', 'address', 'services', 'hours',
+      'location', 'business', 'company', 'inc', 'llc',
+      'restaurant', 'shop', 'store', 'service'
+    ];
+    
+    return businessIndicators.some(indicator => 
+      title.includes(indicator) || snippet.includes(indicator)
+    ) && !link.includes('wikipedia.org') && !link.includes('facebook.com');
+  }
+
+  private extractEmailFromSnippet(text: string): string | null {
+    if (!text) return null;
+    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+    const match = text.match(emailRegex);
+    return match ? match[0] : null;
+  }
+
+  private extractPhoneFromSnippet(text: string): string | null {
+    if (!text) return null;
+    const phoneRegex = /\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})/;
+    const match = text.match(phoneRegex);
+    return match ? match[0] : null;
+  }
+
+  private extractAddressFromSnippet(text: string): string | null {
+    if (!text) return null;
+    // Look for common address patterns
+    const addressRegex = /\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct)/i;
+    const match = text.match(addressRegex);
+    return match ? match[0] : null;
+  }
+
+  private parsePriceLevel(price: string): string | null {
+    if (!price) return null;
+    const dollarSigns = (price.match(/\$/g) || []).length;
+    return dollarSigns > 0 ? dollarSigns.toString() : null;
   }
 
   private generateSerpBusinesses(params: BusinessSearchParams, count: number): DiscoveredBusiness[] {
