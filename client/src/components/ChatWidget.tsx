@@ -161,7 +161,7 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
         // Show welcome message if no conversation history
         const welcomeMessage: ChatMessage = {
           id: 'welcome-msg',
-          content: `Hello! I'm your AlianProbe.ai AI assistant. I'm here to help you understand your business analysis and provide strategic insights. ${context?.businessName ? `I can see you're working with "${context.businessName}". ` : ''}How can I assist you today?`,
+          content: `Hello! I'm your AlienProbe.ai AI assistant. I'm here to help you understand your business analysis and provide strategic insights. ${context?.businessName ? `I can see you're working with "${context.businessName}". ` : ''}How can I assist you today?`,
           role: 'assistant',
           timestamp: new Date()
         };
@@ -195,7 +195,7 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
                 <Bot className="h-4 w-4" />
               </div>
               <div>
-                <CardTitle className="text-sm font-medium">AlianProbe.ai AI</CardTitle>
+                <CardTitle className="text-sm font-medium">AlienProbe.ai AI</CardTitle>
                 <div className="flex items-center space-x-1">
                   {chatEnabled ? (
                     <>

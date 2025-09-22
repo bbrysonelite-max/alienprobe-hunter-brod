@@ -16,7 +16,7 @@ export default function PaymentSuccess() {
                   <CheckCircle className="text-primary-foreground w-4 h-4" />
                 </div>
                 <div>
-                  <h1 className="text-xl font-bold text-foreground">AlianProbe.ai</h1>
+                  <h1 className="text-xl font-bold text-foreground">AlienProbe.ai</h1>
                   <p className="text-xs text-muted-foreground">Payment Success</p>
                 </div>
               </div>

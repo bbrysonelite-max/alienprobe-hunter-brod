@@ -18,7 +18,7 @@ export default function Home() {
                   <Satellite className="text-primary-foreground w-4 h-4" />
                 </div>
                 <div>
-                  <h1 className="text-xl font-bold text-foreground">AlianProbe.ai</h1>
+                  <h1 className="text-xl font-bold text-foreground">AlienProbe.ai</h1>
                   <p className="text-xs text-muted-foreground">Business Scanner</p>
                 </div>
               </div>
@@ -57,7 +57,7 @@ export default function Home() {
             <Rocket className="text-primary-foreground w-8 h-8" />
           </div>
           <h1 className="text-4xl font-bold text-foreground mb-4">
-            AlianProbe.ai Business Scanner
+            AlienProbe.ai Business Scanner
           </h1>
           <p className="text-xl text-muted-foreground max-w-3xl mx-auto leading-relaxed">
             Discover hidden insights and opportunities in your business with our advanced scanning technology. 
@@ -114,7 +114,7 @@ export default function Home() {
         <div className="mt-12 bg-gradient-to-r from-primary/10 to-accent/10 rounded-xl border border-primary/20 p-8">
           <h2 className="text-2xl font-semibold text-foreground mb-6 flex items-center">
             <Rocket className="text-primary mr-3" />
-            Why Choose AlianProbe.ai?
+            Why Choose AlienProbe.ai?
           </h2>
           
           <div className="grid md:grid-cols-2 gap-6">
