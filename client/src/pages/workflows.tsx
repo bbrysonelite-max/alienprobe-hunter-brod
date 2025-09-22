@@ -1135,9 +1135,9 @@ function WorkflowRunsTable({
                     <div>
                       <label className="text-sm font-medium block mb-2">Context</label>
                       <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">
-                        {run.context && typeof run.context === 'object' 
+{String(run.context && typeof run.context === 'object' 
                           ? JSON.stringify(run.context, null, 2) 
-                          : run.context ? String(run.context) : ''}
+                          : run.context || '')}
                       </pre>
                     </div>
                   )}

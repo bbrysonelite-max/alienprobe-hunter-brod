@@ -1187,16 +1187,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!lead) {
           const scanResult = await storage.getScanResult(scanId);
           if (scanResult) {
-            // For valid scans without leads, we could create a minimal lead
-            // For now, just provide a better error message
-            logger.warn('Valid scan found but no associated lead for payment', { scanId });
-            res.status(400).json({ 
-              success: false, 
-              error: "This scan does not have an associated lead for payment. Please contact support.",
-              scanId: scanId,
-              hasScanResult: true
+            // Create a minimal lead for valid scans that don't have one
+            logger.info('Creating lead for scan without associated lead for payment', { scanId });
+            
+            const scanData = scanResult.scanData ? JSON.parse(scanResult.scanData) : {};
+            const businessName = scanData.businessName || scanResult.businessName || "Unknown Business";
+            const website = scanData.businessWebsite || scanResult.businessWebsite || null;
+            
+            // Create a lead for this scan
+            const newLead = await storage.createLead({
+              businessName: businessName,
+              businessWebsite: website,
+              status: "interested", // User is interested since they want to pay
+              source: "scan_payment",
+              priority: "medium",
+              contactInfo: {
+                type: "scan_based",
+                scanId: scanId
+              },
+              lastContactDate: new Date(),
+              notes: `Lead created automatically for payment flow from scan ${scanId}`
             });
-            return;
+            
+            lead = newLead;
+            resolvedId = scanId;
+            lookupMethod = "scanId-created-lead";
+            
+            logger.info('Successfully created lead for scan payment', { 
+              scanId, 
+              leadId: newLead.id, 
+              businessName 
+            });
           }
         }
       }
