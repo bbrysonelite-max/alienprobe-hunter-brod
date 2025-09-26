@@ -8,11 +8,14 @@ import { Rocket, Satellite, Database, Shield, Activity, Settings, BarChart3, Mes
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { usePersistentDraft } from "@/hooks/use-persistent-draft";
 
 export default function Home() {
-  const [message, setMessage] = useState("");
+  const [message, setMessage, clearMessage] = usePersistentDraft("input-ai-message", "");
   const [aiResponse, setAiResponse] = useState("");
   const { toast } = useToast();
+  
+  console.log("[Home] Component rendered with message:", message);
 
   const sendMessageMutation = useMutation({
     mutationFn: async (text: string) => {
@@ -25,7 +28,7 @@ export default function Home() {
     onSuccess: (data) => {
       if (data.success) {
         setAiResponse(data.response);
-        setMessage("");
+        clearMessage();
       } else {
         toast({
           title: "Error",

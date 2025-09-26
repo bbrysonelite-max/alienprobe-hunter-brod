@@ -15,6 +15,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { usePersistentDraft } from "@/hooks/use-persistent-draft";
 
 interface ChatMessage {
   id: string;
@@ -44,7 +45,7 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [inputMessage, setInputMessage] = useState("");
+  const [inputMessage, setInputMessage, clearInputMessage] = usePersistentDraft("input-chat-message", "");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -99,8 +100,8 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
       // Enhanced context with workflow and lead information
       const enhancedContext = {
         ...context,
-        workflows: workflows?.workflows || [],
-        leadCount: leads?.leads?.length || 0,
+        workflows: (workflows as any)?.workflows || [],
+        leadCount: (leads as any)?.leads?.length || 0,
         huntingStatus: { active: true, lastRun: new Date() }
       };
       
@@ -156,7 +157,7 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
 
     setMessages(prev => [...prev, userMessage]);
     sendMessageMutation.mutate(inputMessage.trim());
-    setInputMessage("");
+    clearInputMessage();
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {

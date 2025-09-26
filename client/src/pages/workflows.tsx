@@ -94,7 +94,9 @@ const businessTypes = [
   "ecommerce",
   "manufacturing",
   "non-profit"
-];
+].filter(Boolean).filter(type => type && type.trim().length > 0);
+
+console.log('[WorkflowsPage] businessTypes after filtering:', businessTypes);
 
 // Status Badge Component
 const getStatusBadge = (status: string) => {
@@ -393,8 +395,8 @@ export default function WorkflowsPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Business Types</SelectItem>
-                      {businessTypes.filter(type => type && type.trim().length > 0).map((type) => (
-                        <SelectItem key={type} value={type}>
+                      {businessTypes.filter(type => type && type.trim().length > 0).filter(Boolean).map((type) => (
+                        <SelectItem key={type} value={type || 'unknown'}>
                           {type.charAt(0).toUpperCase() + type.slice(1)}
                         </SelectItem>
                       ))}
@@ -784,8 +786,8 @@ function CreateWorkflowDialog({
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {businessTypes.filter(type => type && type.trim().length > 0).map((type) => (
-                        <SelectItem key={type} value={type}>
+                      {businessTypes.filter(type => type && type.trim().length > 0).filter(Boolean).map((type) => (
+                        <SelectItem key={type} value={type || 'unknown'}>
                           {type.charAt(0).toUpperCase() + type.slice(1)}
                         </SelectItem>
                       ))}

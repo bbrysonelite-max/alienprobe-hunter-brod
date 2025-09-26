@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Switch, Route } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -34,6 +35,57 @@ function Router() {
 }
 
 function App() {
+  // Restore drafts after React app mounts
+  useEffect(() => {
+    console.log('[App] Mounted, checking for drafts to restore...');
+    const restoreDraftsAndFocus = () => {
+      try {
+        const draftsJson = sessionStorage.getItem('app-drafts');
+        const focusJson = sessionStorage.getItem('app-focus');
+        
+        if (draftsJson) {
+          const drafts = JSON.parse(draftsJson);
+          console.log('[App] Found drafts to restore:', drafts);
+          
+          // Restore draft values with a delay to ensure React components are mounted
+          setTimeout(() => {
+            Object.entries(drafts).forEach(([key, value]) => {
+              const element = document.querySelector(`[data-testid="${key}"], [data-preserve="${key}"], #${key}`) as HTMLInputElement | HTMLTextAreaElement;
+              if (element && value) {
+                console.log(`[App] Restoring draft for ${key}:`, value);
+                element.value = value as string;
+                // Dispatch input event to sync with React controlled components
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+            });
+            
+            // Restore focus and cursor position
+            if (focusJson) {
+              const focusInfo = JSON.parse(focusJson);
+              if (focusInfo.selector) {
+                const element = document.querySelector(focusInfo.selector) as HTMLInputElement | HTMLTextAreaElement;
+                if (element) {
+                  element.focus();
+                  if (typeof focusInfo.selectionStart === 'number') {
+                    element.setSelectionRange(focusInfo.selectionStart, focusInfo.selectionEnd || focusInfo.selectionStart);
+                  }
+                }
+              }
+            }
+            
+            // Clean up storage
+            sessionStorage.removeItem('app-drafts');
+            sessionStorage.removeItem('app-focus');
+          }, 200);
+        }
+      } catch (error) {
+        console.warn('[App] Failed to restore drafts:', error);
+      }
+    };
+    
+    restoreDraftsAndFocus();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
