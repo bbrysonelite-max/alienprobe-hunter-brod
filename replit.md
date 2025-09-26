@@ -43,7 +43,20 @@ Preferred communication style: Simple, everyday language.
 ## Database Schema
 - **Users Table**: Basic user management with UUID primary keys
 - **Scan Results Table**: Business scan data with status tracking, timestamps, and JSON scan data storage
+- **Chat Messages Table**: Conversational AI message storage with conversation linking and context metadata
 - **Shared Schema**: Common TypeScript types shared between frontend and backend
+
+## Recent Changes
+
+**September 26, 2025**: Successfully transformed conversational AI system from basic Q&A to comprehensive workflow design assistant
+- Enhanced AI system prompt with workflow design expertise and business process optimization capabilities
+- Integrated workflow and lead discovery context into chat system for intelligent conversations
+- Fixed critical database schema issue by creating missing chat_messages table with performance index
+- Resolved OpenAI API integration by correcting model from non-existent "gpt-5" to "gpt-4o"
+- Fixed critical frontend bug preventing ChatWidget from loading (temporal dead zone error)
+- Added database performance index on chat_messages.conversation_id for optimized queries
+- Comprehensive testing confirmed successful workflow design conversations and business optimization guidance
+- System ready for production deployment with Hunter Brody's autonomous lead discovery integration
 
 ## API Structure
 - **POST /api/scan**: Create new business scan with validation
