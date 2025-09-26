@@ -308,8 +308,8 @@ ${context?.businessName ? `I can see you're working with "${context.businessName
                     <div
                       className={`rounded-lg p-2 text-sm ${
                         message.role === 'user'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted text-muted-foreground'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100'
                       }`}
                     >
                       {message.content}
@@ -342,7 +342,7 @@ ${context?.businessName ? `I can see you're working with "${context.businessName
                   onChange={(e) => setInputMessage(e.target.value)}
                   onKeyPress={handleKeyPress}
                   placeholder="Ask me about business analysis, workflow design, or lead discovery..."
-                  className="flex-1 text-sm border border-border rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 min-h-[36px] max-h-20"
+                  className="flex-1 text-sm text-gray-900 placeholder:text-gray-500 border border-gray-300 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 min-h-[36px] max-h-20 bg-white dark:bg-gray-800 dark:text-gray-100 dark:border-gray-600 dark:placeholder:text-gray-400"
                   rows={1}
                   data-testid="input-chat-message"
                 />
