@@ -88,7 +88,7 @@ export class DiscoveryEngine {
    */
   private resetDailyUsage() {
     this.dailyUsage.clear();
-    for (const source of this.sources.keys()) {
+    for (const source of Array.from(this.sources.keys())) {
       this.dailyUsage.set(source, 0);
     }
   }
@@ -103,7 +103,7 @@ export class DiscoveryEngine {
     let totalQuotaUsed = 0;
 
     // Try each source until we reach maxResults or exhaust quotas
-    for (const [sourceName, source] of this.sources) {
+    for (const [sourceName, source] of Array.from(this.sources)) {
       if (allBusinesses.length >= maxResults) break;
 
       const quota = this.dailyQuotas.get(sourceName) || 0;
@@ -147,7 +147,7 @@ export class DiscoveryEngine {
 
       } catch (error) {
         logger.error(`❌ ${sourceName} discovery failed`, {
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
           params
         });
       }
@@ -180,9 +180,9 @@ export class DiscoveryEngine {
       // Create lead from discovered business
       const leadData: InsertLead = {
         businessName: business.businessName,
-        website: business.website || null,
-        email: business.email || null,
-        industry: business.industry || null,
+        website: business.website || undefined,
+        email: business.email || undefined,
+        industry: business.industry || undefined,
         source: business.sourceName,
         status: 'pending'
       };

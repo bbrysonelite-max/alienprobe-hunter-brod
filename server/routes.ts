@@ -78,7 +78,7 @@ const HUNTER_PRICING = {
 };
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20", // Use valid stable API version
+  apiVersion: "2025-08-27.basil", // Use valid stable API version
 }) : null;
 
 const paymentsEnabled = !!STRIPE_SECRET_KEY;

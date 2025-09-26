@@ -29,6 +29,9 @@ interface ChatWidgetProps {
     businessName?: string;
     website?: string;
     scanData?: any;
+    workflows?: any[];
+    leadCount?: number;
+    huntingStatus?: any;
   };
 }
 
@@ -52,6 +55,17 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
   const { data: chatStatus } = useQuery<ChatStatus>({
     queryKey: ["/api", "chat", "status"],
     enabled: isOpen,
+  });
+
+  // Fetch workflow and lead context when chat is open
+  const { data: workflows } = useQuery({
+    queryKey: ["/api/workflows"],
+    enabled: isOpen && chatEnabled,
+  });
+
+  const { data: leads } = useQuery({
+    queryKey: ["/api/leads"],
+    enabled: isOpen && chatEnabled,
   });
 
   const chatEnabled = chatStatus?.chatEnabled ?? false;
@@ -82,9 +96,17 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
   // Send message mutation
   const sendMessageMutation = useMutation({
     mutationFn: async (message: string) => {
+      // Enhanced context with workflow and lead information
+      const enhancedContext = {
+        ...context,
+        workflows: workflows?.workflows || [],
+        leadCount: leads?.leads?.length || 0,
+        huntingStatus: { active: true, lastRun: new Date() }
+      };
+      
       const response = await apiRequest("POST", "/api/chat", {
         message,
-        context,
+        context: enhancedContext,
         conversationId
       });
       return response.json();
@@ -161,7 +183,15 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
         // Show welcome message if no conversation history
         const welcomeMessage: ChatMessage = {
           id: 'welcome-msg',
-          content: `Hello! I'm your AlienProbe.ai AI assistant. I'm here to help you understand your business analysis and provide strategic insights. ${context?.businessName ? `I can see you're working with "${context.businessName}". ` : ''}How can I assist you today?`,
+          content: `Hello! I'm your AlienProbe.ai AI assistant. I specialize in business analysis, strategic insights, and workflow design. I can help you:
+
+• Design custom workflows for your business processes
+• Understand your business scan results
+• Create automation workflows for lead discovery
+• Optimize existing business workflows
+• Provide strategic recommendations
+
+${context?.businessName ? `I can see you're working with "${context.businessName}". ` : ''}How can I assist you today?`,
           role: 'assistant',
           timestamp: new Date()
         };
@@ -310,7 +340,7 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
                   value={inputMessage}
                   onChange={(e) => setInputMessage(e.target.value)}
                   onKeyPress={handleKeyPress}
-                  placeholder="Ask me about your business analysis..."
+                  placeholder="Ask me about business analysis, workflow design, or lead discovery..."
                   className="flex-1 text-sm border border-border rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 min-h-[36px] max-h-20"
                   rows={1}
                   data-testid="input-chat-message"
