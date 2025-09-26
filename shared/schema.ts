@@ -526,6 +526,77 @@ export const systemGoals = pgTable("system_goals", {
   updatedAt: timestamp("updated_at").defaultNow().notNull()
 });
 
+// ===== ADMIN TOOLS & AUTOMATION TABLES =====
+
+export const pricingPlans = pgTable("pricing_plans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  scanPrice: integer("scan_price").notNull(), // price in cents
+  currency: text("currency").notNull().default("usd"),
+  active: boolean("active").default(true),
+  isDefault: boolean("is_default").default(false),
+  stripePriceId: text("stripe_price_id"), // optional Stripe integration
+  description: text("description"),
+  features: jsonb("features"), // list of features included
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const systemSettings = pgTable("system_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  key: text("key").notNull().unique(),
+  value: jsonb("value").notNull(),
+  description: text("description"),
+  type: text("type").notNull().default("string"), // string, boolean, number, json
+  category: text("category").notNull().default("general"), // general, email, workflow, admin
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const activityEvents = pgTable("activity_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: text("type").notNull(), // scan, lead, email, workflow, system
+  subType: text("sub_type"), // started, completed, failed, discovered, sent, etc.
+  status: text("status").notNull(), // success, error, warning, info
+  message: text("message").notNull(),
+  referenceId: varchar("reference_id"), // ID of related record (scanId, leadId, etc.)
+  referenceType: text("reference_type"), // scan, lead, workflow_run, email, etc.
+  metadata: jsonb("metadata"), // additional event data
+  userId: varchar("user_id"), // optional user context
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    typeIdx: index("activity_events_type_idx").on(table.type),
+    statusIdx: index("activity_events_status_idx").on(table.status),
+    createdAtIdx: index("activity_events_created_at_idx").on(table.createdAt),
+    referenceIdx: index("activity_events_reference_idx").on(table.referenceType, table.referenceId),
+  };
+});
+
+export const emailReports = pgTable("email_reports", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  scanId: varchar("scan_id").references(() => scanResults.id),
+  leadId: varchar("lead_id").references(() => leads.id),
+  recipientEmail: text("recipient_email").notNull(),
+  reportType: text("report_type").notNull(), // scan_complete, lead_summary, weekly_digest
+  subject: text("subject").notNull(),
+  htmlContent: text("html_content"),
+  textContent: text("text_content"),
+  status: text("status").notNull().default("pending"), // pending, sent, failed, bounced
+  providerMessageId: text("provider_message_id"), // SendGrid message ID
+  sentAt: timestamp("sent_at"),
+  error: text("error"),
+  retryCount: integer("retry_count").default(0),
+  metadata: jsonb("metadata"), // template vars, attachments, etc.
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => {
+  return {
+    statusIdx: index("email_reports_status_idx").on(table.status),
+    typeIdx: index("email_reports_type_idx").on(table.reportType),
+    createdAtIdx: index("email_reports_created_at_idx").on(table.createdAt),
+    scanIdIdx: index("email_reports_scan_id_idx").on(table.scanId),
+  };
+});
+
 // System goals schemas
 export const insertSystemGoalSchema = createInsertSchema(systemGoals).omit({
   id: true,
@@ -535,6 +606,73 @@ export const insertSystemGoalSchema = createInsertSchema(systemGoals).omit({
 
 export type InsertSystemGoal = z.infer<typeof insertSystemGoalSchema>;
 export type SystemGoal = typeof systemGoals.$inferSelect;
+
+// Admin tools schemas
+export const insertPricingPlanSchema = createInsertSchema(pricingPlans).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  name: z.string().min(1, "Plan name is required"),
+  scanPrice: z.number().int().min(0, "Price must be non-negative"),
+  currency: z.string().min(3, "Currency code required").optional(),
+  stripePriceId: z.string().optional(),
+  description: z.string().optional(),
+  features: z.any().optional(),
+});
+
+export const insertSystemSettingSchema = createInsertSchema(systemSettings).omit({
+  id: true,
+  updatedAt: true,
+}).extend({
+  key: z.string().min(1, "Setting key is required"),
+  value: z.any(),
+  description: z.string().optional(),
+  type: z.enum(["string", "boolean", "number", "json"]).optional(),
+  category: z.string().optional(),
+});
+
+export const insertActivityEventSchema = createInsertSchema(activityEvents).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  type: z.enum(["scan", "lead", "email", "workflow", "system"]),
+  subType: z.string().optional(),
+  status: z.enum(["success", "error", "warning", "info"]),
+  message: z.string().min(1, "Message is required"),
+  referenceId: z.string().optional(),
+  referenceType: z.string().optional(),
+  metadata: z.any().optional(),
+  userId: z.string().optional(),
+});
+
+export const insertEmailReportSchema = createInsertSchema(emailReports).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  scanId: z.string().optional(),
+  leadId: z.string().optional(),
+  recipientEmail: z.string().email("Valid email required"),
+  reportType: z.enum(["scan_complete", "lead_summary", "weekly_digest"]),
+  subject: z.string().min(1, "Subject is required"),
+  htmlContent: z.string().optional(),
+  textContent: z.string().optional(),
+  status: z.enum(["pending", "sent", "failed", "bounced"]).optional(),
+  providerMessageId: z.string().optional(),
+  sentAt: z.date().optional(),
+  error: z.string().optional(),
+  retryCount: z.number().int().min(0).optional(),
+  metadata: z.any().optional(),
+});
+
+export type InsertPricingPlan = z.infer<typeof insertPricingPlanSchema>;
+export type PricingPlan = typeof pricingPlans.$inferSelect;
+export type InsertSystemSetting = z.infer<typeof insertSystemSettingSchema>;
+export type SystemSetting = typeof systemSettings.$inferSelect;
+export type InsertActivityEvent = z.infer<typeof insertActivityEventSchema>;
+export type ActivityEvent = typeof activityEvents.$inferSelect;
+export type InsertEmailReport = z.infer<typeof insertEmailReportSchema>;
+export type EmailReport = typeof emailReports.$inferSelect;
 
 // ===== TOOL RECOMMENDATION TABLES (Hunter Brody Revenue Engine) =====
 
