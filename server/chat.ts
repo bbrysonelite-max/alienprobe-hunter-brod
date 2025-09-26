@@ -118,16 +118,29 @@ export async function processChatMessage(request: ChatRequest): Promise<ChatResp
       hasContext: !!request.context?.businessName 
     });
 
+    logger.info('Sending request to OpenAI', {
+      model: "gpt-4o",
+      messagesCount: messages.length,
+      systemPromptLength: ALIEN_PROBE_SYSTEM_PROMPT.length
+    });
+
     const response = await openai.chat.completions.create({
-      model: "gpt-5",
+      model: "gpt-4o",
       messages,
       max_completion_tokens: 1000,
     });
 
-    const aiResponse = response.choices[0].message.content;
+    logger.info('OpenAI response received', {
+      choices: response.choices?.length || 0,
+      finishReason: response.choices[0]?.finish_reason,
+      usage: response.usage
+    });
+
+    const aiResponse = response.choices[0]?.message?.content;
 
     logger.info('Chat response generated successfully', {
-      responseLength: aiResponse?.length || 0
+      responseLength: aiResponse?.length || 0,
+      actualResponse: aiResponse ? aiResponse.substring(0, 100) + '...' : 'NULL'
     });
 
     return {
