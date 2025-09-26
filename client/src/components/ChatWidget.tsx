@@ -57,6 +57,8 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
     enabled: isOpen,
   });
 
+  const chatEnabled = chatStatus?.chatEnabled ?? false;
+
   // Fetch workflow and lead context when chat is open
   const { data: workflows } = useQuery({
     queryKey: ["/api/workflows"],
@@ -67,8 +69,6 @@ export default function ChatWidget({ context }: ChatWidgetProps) {
     queryKey: ["/api/leads"],
     enabled: isOpen && chatEnabled,
   });
-
-  const chatEnabled = chatStatus?.chatEnabled ?? false;
 
   // Load conversation history
   const loadConversationHistory = async (convId: string) => {
