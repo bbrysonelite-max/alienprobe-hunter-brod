@@ -4158,32 +4158,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
   
   app.post("/api/admin/email-reports/send", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
     try {
-      const { scanId, recipientEmail } = req.body;
+      // Validate request body using Zod
+      const bodySchema = z.object({
+        scanId: z.string().min(1, "scanId is required"),
+        recipientEmail: z.string().email("Invalid email address")
+      });
       
-      if (!scanId || !recipientEmail) {
-        return res.status(400).json({ error: 'scanId and recipientEmail are required' });
+      const validationResult = bodySchema.safeParse(req.body);
+      if (!validationResult.success) {
+        return res.status(400).json({ 
+          error: 'Invalid request', 
+          details: validationResult.error.errors 
+        });
       }
+      
+      const { scanId, recipientEmail } = validationResult.data;
       
       const scan = await storage.getScanResult(scanId);
       if (!scan) {
         return res.status(404).json({ error: 'Scan not found' });
       }
       
-      // Create email report record
+      // Send email via SendGrid (this now returns htmlContent and textContent)
+      const result = await sendScanReportEmail(recipientEmail, scan.scanData, scan.businessName);
+      
+      // Create email report record with the actual email content
       const report = await storage.createEmailReport({
         scanId,
         recipientEmail,
         reportType: 'scan_complete',
-        subject: `Business Scan Complete: ${scan.businessName}`,
-        htmlContent: '',
-        status: 'pending'
-      });
-      
-      // Send email via SendGrid
-      const result = await sendScanReportEmail(recipientEmail, scan.scanData, scan.businessName);
-      
-      // Update report status
-      await storage.updateEmailReport(report.id, {
+        subject: `📊 Business Scan Complete: ${scan.businessName}`,
+        htmlContent: result.htmlContent || '',
+        textContent: result.textContent,
         status: result.success ? 'sent' : 'failed',
         sentAt: result.success ? new Date() : undefined,
         providerMessageId: result.messageId,
