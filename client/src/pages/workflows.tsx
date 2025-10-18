@@ -55,6 +55,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { Workflow, WorkflowVersion, WorkflowRun, WorkflowRunStep } from "@shared/schema";
+import { workflowTemplates, getCategories, type WorkflowTemplate } from "@/data/workflow-templates";
 
 // Enhanced types for UI components
 interface WorkflowWithVersions extends Workflow {
@@ -346,10 +347,14 @@ export default function WorkflowsPage() {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="list" className="flex items-center gap-2">
               <Database className="w-4 h-4" />
               Workflows
+            </TabsTrigger>
+            <TabsTrigger value="templates" className="flex items-center gap-2" data-testid="tab-templates">
+              <Zap className="w-4 h-4" />
+              Templates
             </TabsTrigger>
             <TabsTrigger value="versions" className="flex items-center gap-2">
               <GitBranch className="w-4 h-4" />
@@ -596,6 +601,253 @@ export default function WorkflowsPage() {
                 )}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Templates Tab */}
+          <TabsContent value="templates" className="space-y-6">
+            <div className="grid gap-6">
+              {/* Templates Header */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Zap className="w-5 h-5 text-purple-600" />
+                    Workflow Templates
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground mt-2">
+                    Pre-built workflow templates to help you get started quickly. Select a template, customize it to your needs, and deploy.
+                  </p>
+                </CardHeader>
+              </Card>
+
+              {/* Template Categories */}
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {workflowTemplates.map((template) => (
+                  <Card key={template.id} className="hover:shadow-lg transition-shadow">
+                    <CardHeader>
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <CardTitle className="text-lg flex items-center gap-2">
+                            {template.name}
+                            <Badge 
+                              variant={
+                                template.difficulty === 'beginner' ? 'default' :
+                                template.difficulty === 'intermediate' ? 'secondary' :
+                                'destructive'
+                              }
+                              className="text-xs"
+                            >
+                              {template.difficulty}
+                            </Badge>
+                          </CardTitle>
+                          <div className="flex items-center gap-2 mt-2">
+                            <Badge variant="outline" className="text-xs">
+                              {template.category}
+                            </Badge>
+                            <Badge variant="outline" className="text-xs">
+                              {template.businessType}
+                            </Badge>
+                          </div>
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <p className="text-sm text-muted-foreground">
+                        {template.description}
+                      </p>
+
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Clock className="w-4 h-4" />
+                        <span>Setup time: {template.estimatedTime}</span>
+                      </div>
+
+                      <div className="space-y-2">
+                        <h4 className="text-sm font-semibold">Benefits:</h4>
+                        <ul className="text-sm text-muted-foreground space-y-1">
+                          {template.benefits.slice(0, 3).map((benefit, idx) => (
+                            <li key={idx} className="flex items-start gap-2">
+                              <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <span>{benefit}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <Separator />
+
+                      <Dialog>
+                        <DialogTrigger asChild>
+                          <Button variant="outline" className="w-full" data-testid={`button-view-template-${template.id}`}>
+                            <Eye className="w-4 h-4 mr-2" />
+                            View Details
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+                          <DialogHeader>
+                            <DialogTitle className="flex items-center gap-2">
+                              {template.name}
+                              <Badge variant="outline">{template.difficulty}</Badge>
+                            </DialogTitle>
+                          </DialogHeader>
+                          
+                          <div className="space-y-6">
+                            <div>
+                              <h3 className="font-semibold mb-2">Description</h3>
+                              <p className="text-sm text-muted-foreground">{template.description}</p>
+                            </div>
+
+                            <div>
+                              <h3 className="font-semibold mb-2">Category & Type</h3>
+                              <div className="flex gap-2">
+                                <Badge>{template.category}</Badge>
+                                <Badge variant="outline">{template.businessType}</Badge>
+                              </div>
+                            </div>
+
+                            <div>
+                              <h3 className="font-semibold mb-2">Benefits</h3>
+                              <ul className="space-y-2">
+                                {template.benefits.map((benefit, idx) => (
+                                  <li key={idx} className="flex items-start gap-2 text-sm">
+                                    <CheckCircle className="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" />
+                                    <span>{benefit}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+
+                            <div>
+                              <h3 className="font-semibold mb-2">Setup Instructions</h3>
+                              <ScrollArea className="h-64 w-full rounded border p-4">
+                                <pre className="text-xs whitespace-pre-wrap font-mono">
+                                  {template.instructions}
+                                </pre>
+                              </ScrollArea>
+                            </div>
+
+                            <div>
+                              <h3 className="font-semibold mb-2">Workflow Structure</h3>
+                              <div className="space-y-2">
+                                <p className="text-sm text-muted-foreground">
+                                  Steps: {template.definition.steps.length} | 
+                                  Entry Point: <code className="bg-muted px-1 py-0.5 rounded">{template.definition.entry}</code>
+                                </p>
+                                <ScrollArea className="h-48 w-full rounded border p-4">
+                                  <div className="space-y-2">
+                                    {template.definition.steps.map((step, idx) => (
+                                      <div key={idx} className="border-l-2 border-blue-500 pl-3 py-1">
+                                        <div className="flex items-center gap-2">
+                                          <Badge variant="outline" className="text-xs">{step.type}</Badge>
+                                          <span className="text-sm font-medium">{step.title}</span>
+                                        </div>
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                          Key: <code className="bg-muted px-1 rounded">{step.key}</code>
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </ScrollArea>
+                              </div>
+                            </div>
+
+                            <div className="flex gap-3">
+                              <Button
+                                className="flex-1"
+                                onClick={() => {
+                                  // Create workflow from template
+                                  toast({
+                                    title: "Template Selected",
+                                    description: `Creating workflow from "${template.name}" template...`
+                                  });
+                                  // You can add actual workflow creation logic here
+                                }}
+                                data-testid={`button-use-template-${template.id}`}
+                              >
+                                <Zap className="w-4 h-4 mr-2" />
+                                Use This Template
+                              </Button>
+                              <Button variant="outline" asChild>
+                                <a href="#" onClick={(e) => {
+                                  e.preventDefault();
+                                  // Download template as JSON
+                                  const blob = new Blob([JSON.stringify(template.definition, null, 2)], { type: 'application/json' });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement('a');
+                                  a.href = url;
+                                  a.download = `${template.id}-template.json`;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                  toast({
+                                    title: "Template Downloaded",
+                                    description: "Workflow template saved to your downloads"
+                                  });
+                                }}>
+                                  <Download className="w-4 h-4 mr-2" />
+                                  Download
+                                </a>
+                              </Button>
+                            </div>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+
+                      <Button
+                        className="w-full"
+                        onClick={() => {
+                          toast({
+                            title: "Template Selected",
+                            description: `Creating workflow from "${template.name}" template...`,
+                          });
+                          // Future: Implement actual template usage
+                          // This could pre-fill the create workflow form with the template data
+                        }}
+                        data-testid={`button-quick-use-${template.id}`}
+                      >
+                        <Zap className="w-4 h-4 mr-2" />
+                        Use Template
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {/* Quick Start Guide */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <FileText className="w-5 w-5" />
+                    Quick Start Guide
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <h4 className="font-semibold flex items-center gap-2">
+                        <Target className="w-4 h-4 text-green-600" />
+                        Getting Started
+                      </h4>
+                      <ul className="text-sm text-muted-foreground space-y-1 pl-6 list-disc">
+                        <li>Browse templates by category or difficulty level</li>
+                        <li>Click "View Details" to see full instructions</li>
+                        <li>Use "Use Template" to create a workflow</li>
+                        <li>Customize the workflow to match your needs</li>
+                      </ul>
+                    </div>
+                    <div className="space-y-2">
+                      <h4 className="font-semibold flex items-center gap-2">
+                        <Users className="w-4 h-4 text-blue-600" />
+                        Best Practices
+                      </h4>
+                      <ul className="text-sm text-muted-foreground space-y-1 pl-6 list-disc">
+                        <li>Start with beginner templates to learn the system</li>
+                        <li>Test workflows before deploying to production</li>
+                        <li>Review instructions carefully before customizing</li>
+                        <li>Monitor workflow runs for optimization opportunities</li>
+                      </ul>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
           </TabsContent>
 
           {/* Versions Tab */}
@@ -1136,11 +1388,7 @@ function WorkflowRunsTable({
                   {run.context && (
                     <div>
                       <label className="text-sm font-medium block mb-2">Context</label>
-                      <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">
-{run.context && typeof run.context === 'object' 
-                          ? JSON.stringify(run.context, null, 2) 
-                          : String(run.context || '')}
-                      </pre>
+                      <pre className="bg-muted p-3 rounded text-xs overflow-x-auto">{JSON.stringify(run.context as Record<string, any>, null, 2)}</pre>
                     </div>
                   )}
                   
