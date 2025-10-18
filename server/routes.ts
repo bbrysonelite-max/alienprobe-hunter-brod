@@ -4118,6 +4118,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // SSE endpoint for real-time activity stream
+  app.get("/api/admin/events/stream", requireAuth(['system:monitor']), (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    logger.info('Activity stream connection established');
+    
+    // Send initial connection event
+    res.write(`data: ${JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() })}\n\n`);
+    
+    // Poll for new events every 2 seconds
+    const intervalId = setInterval(async () => {
+      try {
+        const events = await storage.getActivityEvents(5);
+        if (events.length > 0) {
+          res.write(`data: ${JSON.stringify({ type: 'events', events })}\n\n`);
+        }
+      } catch (error) {
+        logger.error('Error streaming activity events', error as Error);
+      }
+    }, 2000);
+    
+    // Heartbeat to keep connection alive
+    const heartbeatId = setInterval(() => {
+      res.write(`:heartbeat\n\n`);
+    }, 30000);
+    
+    // Cleanup on connection close
+    req.on('close', () => {
+      clearInterval(intervalId);
+      clearInterval(heartbeatId);
+      logger.info('Activity stream connection closed');
+    });
+  });
+
   // ===== EMAIL REPORT ROUTES =====
   
   app.post("/api/admin/email-reports/send", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
