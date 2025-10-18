@@ -24,6 +24,14 @@ import {
   pipelineRuns,
   systemGoals,
   insertSystemGoalSchema,
+  pricingPlans,
+  systemSettings,
+  activityEvents,
+  emailReports,
+  insertPricingPlanSchema,
+  insertSystemSettingSchema,
+  insertActivityEventSchema,
+  insertEmailReportSchema,
   type Workflow,
   type WorkflowVersion,
   type WorkflowRun,
@@ -44,6 +52,7 @@ import { hunterScheduler } from "./prospecting/hunter-scheduler";
 import { recommendationEngine } from "./recommendations/recommendation-engine";
 import { businessAnalyzer } from "./analysis/business-analyzer";
 import { config } from "./config";
+import { sendEmail, sendScanReportEmail } from "./email/sendgrid";
 
 // Initialize Stripe if secret key is present
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -3926,6 +3935,258 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       logger.error('Failed to set goal', error as Error);
       res.status(500).json({ error: 'Failed to set goal' });
+    }
+  });
+
+  // ===== PRICING PLAN ADMIN ROUTES =====
+  
+  app.get("/api/admin/pricing", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const plans = await storage.getAllPricingPlans();
+      res.json({ success: true, plans });
+    } catch (error) {
+      logger.error('Failed to get pricing plans', error as Error);
+      res.status(500).json({ error: 'Failed to fetch pricing plans' });
+    }
+  });
+
+  app.post("/api/admin/pricing", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const planData = insertPricingPlanSchema.parse(req.body);
+      const plan = await storage.createPricingPlan(planData);
+      
+      // Create activity event
+      await storage.createActivityEvent({
+        type: 'system',
+        subType: 'pricing_created',
+        status: 'success',
+        message: `Pricing plan created: ${plan.name}`,
+        referenceId: plan.id,
+        referenceType: 'pricing_plan',
+        metadata: { planName: plan.name, price: plan.scanPrice }
+      });
+      
+      res.json({ success: true, plan });
+    } catch (error) {
+      logger.error('Failed to create pricing plan', error as Error);
+      res.status(400).json({ error: 'Failed to create pricing plan' });
+    }
+  });
+
+  app.patch("/api/admin/pricing/:id", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+      const plan = await storage.updatePricingPlan(id, updates);
+      
+      if (!plan) {
+        return res.status(404).json({ error: 'Pricing plan not found' });
+      }
+      
+      // Create activity event
+      await storage.createActivityEvent({
+        type: 'system',
+        subType: 'pricing_updated',
+        status: 'success',
+        message: `Pricing plan updated: ${plan.name}`,
+        referenceId: plan.id,
+        referenceType: 'pricing_plan',
+        metadata: { planName: plan.name, updates }
+      });
+      
+      res.json({ success: true, plan });
+    } catch (error) {
+      logger.error('Failed to update pricing plan', error as Error);
+      res.status(400).json({ error: 'Failed to update pricing plan' });
+    }
+  });
+
+  app.delete("/api/admin/pricing/:id", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const success = await storage.deletePricingPlan(id);
+      
+      if (!success) {
+        return res.status(404).json({ error: 'Pricing plan not found' });
+      }
+      
+      // Create activity event
+      await storage.createActivityEvent({
+        type: 'system',
+        subType: 'pricing_deleted',
+        status: 'success',
+        message: `Pricing plan deleted`,
+        referenceId: id,
+        referenceType: 'pricing_plan'
+      });
+      
+      res.json({ success: true });
+    } catch (error) {
+      logger.error('Failed to delete pricing plan', error as Error);
+      res.status(500).json({ error: 'Failed to delete pricing plan' });
+    }
+  });
+
+  // ===== SYSTEM SETTINGS ADMIN ROUTES =====
+  
+  app.get("/api/admin/settings", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const { category } = req.query;
+      const settings = category 
+        ? await storage.getSystemSettingsByCategory(category as string)
+        : await storage.getAllSystemSettings();
+      res.json({ success: true, settings });
+    } catch (error) {
+      logger.error('Failed to get system settings', error as Error);
+      res.status(500).json({ error: 'Failed to fetch system settings' });
+    }
+  });
+
+  app.post("/api/admin/settings", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const settingData = insertSystemSettingSchema.parse(req.body);
+      const setting = await storage.createSystemSetting(settingData);
+      
+      // Create activity event
+      await storage.createActivityEvent({
+        type: 'system',
+        subType: 'setting_created',
+        status: 'success',
+        message: `System setting created: ${setting.key}`,
+        referenceId: setting.id,
+        referenceType: 'system_setting',
+        metadata: { key: setting.key, value: setting.value }
+      });
+      
+      res.json({ success: true, setting });
+    } catch (error) {
+      logger.error('Failed to create system setting', error as Error);
+      res.status(400).json({ error: 'Failed to create system setting' });
+    }
+  });
+
+  app.patch("/api/admin/settings/:key", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const { key } = req.params;
+      const { value } = req.body;
+      const setting = await storage.updateSystemSetting(key, value);
+      
+      if (!setting) {
+        return res.status(404).json({ error: 'System setting not found' });
+      }
+      
+      // Create activity event
+      await storage.createActivityEvent({
+        type: 'system',
+        subType: 'setting_updated',
+        status: 'success',
+        message: `System setting updated: ${setting.key}`,
+        referenceId: setting.id,
+        referenceType: 'system_setting',
+        metadata: { key: setting.key, value: setting.value }
+      });
+      
+      res.json({ success: true, setting });
+    } catch (error) {
+      logger.error('Failed to update system setting', error as Error);
+      res.status(400).json({ error: 'Failed to update system setting' });
+    }
+  });
+
+  // ===== ACTIVITY EVENTS ROUTES =====
+  
+  app.get("/api/admin/events", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 100;
+      const type = req.query.type as string | undefined;
+      const events = await storage.getActivityEvents(limit, type);
+      res.json({ success: true, events });
+    } catch (error) {
+      logger.error('Failed to get activity events', error as Error);
+      res.status(500).json({ error: 'Failed to fetch activity events' });
+    }
+  });
+
+  app.post("/api/admin/events", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const eventData = insertActivityEventSchema.parse(req.body);
+      const event = await storage.createActivityEvent(eventData);
+      res.json({ success: true, event });
+    } catch (error) {
+      logger.error('Failed to create activity event', error as Error);
+      res.status(400).json({ error: 'Failed to create activity event' });
+    }
+  });
+
+  // ===== EMAIL REPORT ROUTES =====
+  
+  app.post("/api/admin/email-reports/send", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const { scanId, recipientEmail } = req.body;
+      
+      if (!scanId || !recipientEmail) {
+        return res.status(400).json({ error: 'scanId and recipientEmail are required' });
+      }
+      
+      const scan = await storage.getScanResult(scanId);
+      if (!scan) {
+        return res.status(404).json({ error: 'Scan not found' });
+      }
+      
+      // Create email report record
+      const report = await storage.createEmailReport({
+        scanId,
+        recipientEmail,
+        reportType: 'scan_complete',
+        subject: `Business Scan Complete: ${scan.businessName}`,
+        htmlContent: '',
+        status: 'pending'
+      });
+      
+      // Send email via SendGrid
+      const result = await sendScanReportEmail(recipientEmail, scan.scanData, scan.businessName);
+      
+      // Update report status
+      await storage.updateEmailReport(report.id, {
+        status: result.success ? 'sent' : 'failed',
+        sentAt: result.success ? new Date() : undefined,
+        providerMessageId: result.messageId,
+        error: result.error
+      });
+      
+      // Create activity event
+      await storage.createActivityEvent({
+        type: 'email',
+        subType: result.success ? 'sent' : 'failed',
+        status: result.success ? 'success' : 'error',
+        message: result.success 
+          ? `Email report sent to ${recipientEmail}` 
+          : `Email report failed: ${result.error}`,
+        referenceId: scanId,
+        referenceType: 'scan',
+        metadata: { recipientEmail, reportId: report.id }
+      });
+      
+      res.json({ 
+        success: result.success,
+        report,
+        messageId: result.messageId,
+        error: result.error
+      });
+    } catch (error) {
+      logger.error('Failed to send email report', error as Error);
+      res.status(500).json({ error: 'Failed to send email report' });
+    }
+  });
+
+  app.get("/api/admin/email-reports/:scanId", requireAuth(['system:monitor']), async (req: Request, res: Response) => {
+    try {
+      const { scanId } = req.params;
+      const reports = await storage.getEmailReportsByScanId(scanId);
+      res.json({ success: true, reports });
+    } catch (error) {
+      logger.error('Failed to get email reports', error as Error);
+      res.status(500).json({ error: 'Failed to fetch email reports' });
     }
   });
 

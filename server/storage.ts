@@ -12,6 +12,10 @@ import {
   workflowVersions,
   workflowRuns,
   workflowRunSteps,
+  pricingPlans,
+  systemSettings,
+  activityEvents,
+  emailReports,
   type User, 
   type InsertUser, 
   type ScanResult, 
@@ -37,7 +41,15 @@ import {
   type WorkflowRun,
   type InsertWorkflowRun,
   type WorkflowRunStep,
-  type InsertWorkflowRunStep
+  type InsertWorkflowRunStep,
+  type PricingPlan,
+  type InsertPricingPlan,
+  type SystemSetting,
+  type InsertSystemSetting,
+  type ActivityEvent,
+  type InsertActivityEvent,
+  type EmailReport,
+  type InsertEmailReport
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, count, sql, asc, or, gte, lte } from "drizzle-orm";
@@ -139,6 +151,38 @@ export interface IStorage {
   
   // Workflow version deletion operations
   deleteWorkflowVersionsByWorkflowId(workflowId: string): Promise<number>;
+  
+  // Pricing plan operations
+  getPricingPlan(id: string): Promise<PricingPlan | undefined>;
+  getAllPricingPlans(): Promise<PricingPlan[]>;
+  getActivePricingPlans(): Promise<PricingPlan[]>;
+  getDefaultPricingPlan(): Promise<PricingPlan | undefined>;
+  createPricingPlan(plan: InsertPricingPlan): Promise<PricingPlan>;
+  updatePricingPlan(id: string, updates: Partial<PricingPlan>): Promise<PricingPlan | undefined>;
+  deletePricingPlan(id: string): Promise<boolean>;
+  
+  // System settings operations
+  getSystemSetting(key: string): Promise<SystemSetting | undefined>;
+  getAllSystemSettings(): Promise<SystemSetting[]>;
+  getSystemSettingsByCategory(category: string): Promise<SystemSetting[]>;
+  createSystemSetting(setting: InsertSystemSetting): Promise<SystemSetting>;
+  updateSystemSetting(key: string, value: any): Promise<SystemSetting | undefined>;
+  deleteSystemSetting(key: string): Promise<boolean>;
+  
+  // Activity event operations
+  getActivityEvent(id: string): Promise<ActivityEvent | undefined>;
+  getActivityEvents(limit?: number, type?: string): Promise<ActivityEvent[]>;
+  getActivityEventsByType(type: string, limit?: number): Promise<ActivityEvent[]>;
+  getActivityEventsByReference(referenceType: string, referenceId: string): Promise<ActivityEvent[]>;
+  createActivityEvent(event: InsertActivityEvent): Promise<ActivityEvent>;
+  
+  // Email report operations
+  getEmailReport(id: string): Promise<EmailReport | undefined>;
+  getEmailReportsByScanId(scanId: string): Promise<EmailReport[]>;
+  getEmailReportsByLeadId(leadId: string): Promise<EmailReport[]>;
+  getPendingEmailReports(limit?: number): Promise<EmailReport[]>;
+  createEmailReport(report: InsertEmailReport): Promise<EmailReport>;
+  updateEmailReport(id: string, updates: Partial<EmailReport>): Promise<EmailReport | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -897,6 +941,203 @@ export class DatabaseStorage implements IStorage {
       .where(eq(workflowVersions.workflowId, workflowId))
       .returning();
     return result.length;
+  }
+
+  // Pricing plan operations implementation
+  async getPricingPlan(id: string): Promise<PricingPlan | undefined> {
+    const [plan] = await db.select().from(pricingPlans).where(eq(pricingPlans.id, id));
+    return plan || undefined;
+  }
+
+  async getAllPricingPlans(): Promise<PricingPlan[]> {
+    const plans = await db
+      .select()
+      .from(pricingPlans)
+      .orderBy(asc(pricingPlans.scanPrice));
+    return plans;
+  }
+
+  async getActivePricingPlans(): Promise<PricingPlan[]> {
+    const plans = await db
+      .select()
+      .from(pricingPlans)
+      .where(eq(pricingPlans.active, true))
+      .orderBy(asc(pricingPlans.scanPrice));
+    return plans;
+  }
+
+  async getDefaultPricingPlan(): Promise<PricingPlan | undefined> {
+    const [plan] = await db
+      .select()
+      .from(pricingPlans)
+      .where(and(eq(pricingPlans.isDefault, true), eq(pricingPlans.active, true)))
+      .limit(1);
+    return plan || undefined;
+  }
+
+  async createPricingPlan(insertPlan: InsertPricingPlan): Promise<PricingPlan> {
+    const [plan] = await db
+      .insert(pricingPlans)
+      .values(insertPlan)
+      .returning();
+    return plan;
+  }
+
+  async updatePricingPlan(id: string, updates: Partial<PricingPlan>): Promise<PricingPlan | undefined> {
+    const [plan] = await db
+      .update(pricingPlans)
+      .set(updates)
+      .where(eq(pricingPlans.id, id))
+      .returning();
+    return plan || undefined;
+  }
+
+  async deletePricingPlan(id: string): Promise<boolean> {
+    const result = await db.delete(pricingPlans).where(eq(pricingPlans.id, id)).returning();
+    return result.length > 0;
+  }
+
+  // System settings operations implementation
+  async getSystemSetting(key: string): Promise<SystemSetting | undefined> {
+    const [setting] = await db.select().from(systemSettings).where(eq(systemSettings.key, key));
+    return setting || undefined;
+  }
+
+  async getAllSystemSettings(): Promise<SystemSetting[]> {
+    const settings = await db
+      .select()
+      .from(systemSettings)
+      .orderBy(asc(systemSettings.category), asc(systemSettings.key));
+    return settings;
+  }
+
+  async getSystemSettingsByCategory(category: string): Promise<SystemSetting[]> {
+    const settings = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.category, category))
+      .orderBy(asc(systemSettings.key));
+    return settings;
+  }
+
+  async createSystemSetting(insertSetting: InsertSystemSetting): Promise<SystemSetting> {
+    const [setting] = await db
+      .insert(systemSettings)
+      .values(insertSetting)
+      .returning();
+    return setting;
+  }
+
+  async updateSystemSetting(key: string, value: any): Promise<SystemSetting | undefined> {
+    const [setting] = await db
+      .update(systemSettings)
+      .set({ value, updatedAt: new Date() })
+      .where(eq(systemSettings.key, key))
+      .returning();
+    return setting || undefined;
+  }
+
+  async deleteSystemSetting(key: string): Promise<boolean> {
+    const result = await db.delete(systemSettings).where(eq(systemSettings.key, key)).returning();
+    return result.length > 0;
+  }
+
+  // Activity event operations implementation
+  async getActivityEvent(id: string): Promise<ActivityEvent | undefined> {
+    const [event] = await db.select().from(activityEvents).where(eq(activityEvents.id, id));
+    return event || undefined;
+  }
+
+  async getActivityEvents(limit: number = 100, type?: string): Promise<ActivityEvent[]> {
+    const whereClause = type ? eq(activityEvents.type, type) : undefined;
+    const events = await db
+      .select()
+      .from(activityEvents)
+      .where(whereClause)
+      .orderBy(desc(activityEvents.createdAt))
+      .limit(limit);
+    return events;
+  }
+
+  async getActivityEventsByType(type: string, limit: number = 100): Promise<ActivityEvent[]> {
+    const events = await db
+      .select()
+      .from(activityEvents)
+      .where(eq(activityEvents.type, type))
+      .orderBy(desc(activityEvents.createdAt))
+      .limit(limit);
+    return events;
+  }
+
+  async getActivityEventsByReference(referenceType: string, referenceId: string): Promise<ActivityEvent[]> {
+    const events = await db
+      .select()
+      .from(activityEvents)
+      .where(and(
+        eq(activityEvents.referenceType, referenceType),
+        eq(activityEvents.referenceId, referenceId)
+      ))
+      .orderBy(desc(activityEvents.createdAt));
+    return events;
+  }
+
+  async createActivityEvent(insertEvent: InsertActivityEvent): Promise<ActivityEvent> {
+    const [event] = await db
+      .insert(activityEvents)
+      .values(insertEvent)
+      .returning();
+    return event;
+  }
+
+  // Email report operations implementation
+  async getEmailReport(id: string): Promise<EmailReport | undefined> {
+    const [report] = await db.select().from(emailReports).where(eq(emailReports.id, id));
+    return report || undefined;
+  }
+
+  async getEmailReportsByScanId(scanId: string): Promise<EmailReport[]> {
+    const reports = await db
+      .select()
+      .from(emailReports)
+      .where(eq(emailReports.scanId, scanId))
+      .orderBy(desc(emailReports.createdAt));
+    return reports;
+  }
+
+  async getEmailReportsByLeadId(leadId: string): Promise<EmailReport[]> {
+    const reports = await db
+      .select()
+      .from(emailReports)
+      .where(eq(emailReports.leadId, leadId))
+      .orderBy(desc(emailReports.createdAt));
+    return reports;
+  }
+
+  async getPendingEmailReports(limit: number = 10): Promise<EmailReport[]> {
+    const reports = await db
+      .select()
+      .from(emailReports)
+      .where(eq(emailReports.status, "pending"))
+      .orderBy(asc(emailReports.createdAt))
+      .limit(limit);
+    return reports;
+  }
+
+  async createEmailReport(insertReport: InsertEmailReport): Promise<EmailReport> {
+    const [report] = await db
+      .insert(emailReports)
+      .values(insertReport)
+      .returning();
+    return report;
+  }
+
+  async updateEmailReport(id: string, updates: Partial<EmailReport>): Promise<EmailReport | undefined> {
+    const [report] = await db
+      .update(emailReports)
+      .set(updates)
+      .where(eq(emailReports.id, id))
+      .returning();
+    return report || undefined;
   }
 }
 
