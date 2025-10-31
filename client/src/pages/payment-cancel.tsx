@@ -2,16 +2,21 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { 
-  XCircle, 
-  ArrowLeft, 
-  CreditCard, 
+import {
+  XCircle,
+  ArrowLeft,
+  CreditCard,
   Satellite,
   Home,
   RefreshCw
 } from "lucide-react";
 
 export default function PaymentCancel() {
+  // Get scan_id from URL query params
+  const urlParams = new URLSearchParams(window.location.search);
+  const scanId = urlParams.get('scan_id');
+  const resultsUrl = scanId ? `/scan/${scanId}` : '/results';
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Navigation Header */}
@@ -131,7 +136,7 @@ export default function PaymentCancel() {
 
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row gap-4 justify-center">
-          <Link href="/results">
+          <Link href={resultsUrl}>
             <Button size="lg" className="px-8" data-testid="button-back-to-results">
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back to Results
