@@ -770,8 +770,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             timestamp: scanData.timestamp,
             websiteAnalysis: scanData.websiteAnalysis,
             businessScore: scanData.businessScore,
-            // Remove premium content
-            insights: scanData.insights ? ["Premium insights available after purchase"] : [],
+            // Show first 2 insights for free as a teaser
+            insights: scanData.insights ? scanData.insights.slice(0, 2) : [],
             completed: scanData.completed,
             // Add indicator that more content is available
             premiumContentAvailable: true,
@@ -1390,7 +1390,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ],
         mode: 'payment',
         success_url: `${req.protocol}://${req.get('host')}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${req.protocol}://${req.get('host')}/payment-cancel`,
+        cancel_url: `${req.protocol}://${req.get('host')}/payment-cancel?scan_id=${scanId || ''}`,
         metadata: {
           leadId: lead.id,
           scanId: scanId || '',
