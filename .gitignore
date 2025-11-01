@@ -12,6 +12,7 @@ build/
 out/
 server/public/
 
+
 # Environment variables
 .env
 .env.local
